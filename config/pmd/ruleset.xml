@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ruleset name="SynkaCore"
+         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+
+    <description>
+        Regras PMD do SynkaCore: foco em padrões propensos a erro, boas práticas e
+        performance. Categorias puramente estilísticas/opinativas ficam a cargo do
+        Checkstyle.
+    </description>
+
+    <rule ref="category/java/bestpractices.xml">
+        <!-- Logging parametrizado do SLF4J não precisa de guard isXEnabled(). -->
+        <exclude name="GuardLogStatement"/>
+    </rule>
+
+    <rule ref="category/java/errorprone.xml">
+        <!-- Constantes de fase do simulador são literais legíveis no próprio contexto. -->
+        <exclude name="AvoidLiteralsInIfCondition"/>
+    </rule>
+
+    <rule ref="category/java/performance.xml"/>
+
+</ruleset>

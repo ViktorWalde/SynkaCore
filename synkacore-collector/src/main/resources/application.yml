@@ -1,0 +1,22 @@
+spring:
+  application:
+    name: synkacore-collector
+  main:
+    web-application-type: none
+
+postgres:
+  url: jdbc:postgresql://localhost:5432/synkacore
+  username: postgres
+  password: synkacore
+
+opcua:
+  endpoint-url: opc.tcp://localhost:53530/OPCUA/SimulationServer
+  node-id: ns=3;i=1003
+  tag-name: Esteira1.Temperatura
+  unit: °C
+  interval-ms: 2000
+  application-name: SynkaCore
+
+buffer:
+  database-path: buffer/synkacore_buffer.db
+  sync-batch-size: 10

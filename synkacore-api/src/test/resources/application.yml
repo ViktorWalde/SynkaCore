@@ -1,0 +1,7 @@
+# Configuração mínima para os testes de fatia web (@WebMvcTest):
+# o binding de PostgresSettings é validado no startup, mas nenhum DataSource real
+# é criado (DataSourceAutoConfiguration e ApiConfig ficam fora da fatia web).
+postgres:
+  url: jdbc:postgresql://localhost:5432/test
+  username: test
+  password: test

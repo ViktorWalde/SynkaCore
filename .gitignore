@@ -1,0 +1,51 @@
+# Maven
+target/
+**/target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+release.properties
+dependency-reduced-pom.xml
+
+# Java
+*.class
+hs_err_pid*
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+
+# Logs
+logs/
+**/logs/
+*.log
+
+# Databases / local buffers
+*.db
+*.sqlite
+*.sqlite3
+**/buffer/
+
+# OPC UA PKI store
+**/pki/
+
+# Environment configs
+application-local.yml
+application-local.properties
+
+# Tooling
+.claude/
+
+# Notas pessoais (fora do versionamento)
+prompt-atualizar-memoria-claude.md
+docsPrivate/
+
+# OS
+.DS_Store
+Thumbs.db
+.directory

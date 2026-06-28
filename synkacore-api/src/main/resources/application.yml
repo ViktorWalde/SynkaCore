@@ -1,0 +1,11 @@
+spring:
+  application:
+    name: synkacore-api
+
+server:
+  port: 8080
+
+postgres:
+  url: jdbc:postgresql://localhost:5432/synkacore
+  username: postgres
+  password: synkacore

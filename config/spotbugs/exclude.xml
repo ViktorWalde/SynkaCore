@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Exclusões conscientes do SpotBugs/FindSecBugs. Cada uma tem justificativa: são
+  falso-positivos no contexto deste middleware industrial, não bugs reais.
+-->
+<FindBugsFilter xmlns="https://github.com/spotbugs/filter/3.0.0">
+
+    <!-- CRLF_INJECTION_LOGS: os campos logados (tag, unidade, valor) vêm da
+         configuração industrial confiável (application.yml) e de leituras numéricas
+         de sensores — não de entrada externa não confiável. Não há vetor de log forging. -->
+    <Match>
+        <Bug pattern="CRLF_INJECTION_LOGS"/>
+    </Match>
+
+    <!-- PATH_TRAVERSAL_IN: o caminho do arquivo SQLite vem da configuração de deploy
+         (buffer.database-path), controlada pelo operador, não de entrada de usuário. -->
+    <Match>
+        <Class name="com.synka.core.infrastructure.persistence.SensorReadingLocalBufferRepository"/>
+        <Bug pattern="PATH_TRAVERSAL_IN"/>
+    </Match>
+
+    <!-- PREDICTABLE_RANDOM: o gerador alimenta apenas o ruído da simulação de processo.
+         Aleatoriedade aqui não tem função de segurança; SecureRandom seria inadequado. -->
+    <Match>
+        <Class name="com.synka.core.infrastructure.simulation.VacuumChamberSimulator"/>
+        <Bug pattern="PREDICTABLE_RANDOM"/>
+    </Match>
+
+    <!-- SPRING_ENDPOINT: marcador informativo de que a classe é um endpoint HTTP
+         (superfície de ataque a revisar), não um bug. Os endpoints são somente
+         leitura (GET /readings, GET /health) e não recebem corpo/entrada do cliente. -->
+    <Match>
+        <Bug pattern="SPRING_ENDPOINT"/>
+    </Match>
+
+    <!-- EI_EXPOSE_REP2: o Worker guarda o ApplicationContext (singleton gerenciado
+         pelo Spring) para disparar o shutdown em falha crítica de conexão no startup.
+         É injeção de dependência intencional, não exposição de estado do chamador. -->
+    <Match>
+        <Class name="com.synka.core.collector.SensorCollectorWorker"/>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!-- THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION: interfaces funcionais genéricas
+         equivalentes a java.util.concurrent.Callable — o contrato é executar uma ação
+         arbitrária e propagar qualquer exceção. Especificar o tipo derrotaria o propósito. -->
+    <Match>
+        <Or>
+            <Class name="com.synka.core.infrastructure.resilience.ResiliencePipeline"/>
+            <Class name="com.synka.core.infrastructure.resilience.ThrowingRunnable"/>
+        </Or>
+        <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+    </Match>
+
+</FindBugsFilter>
