@@ -1,0 +1,471 @@
+// Contrato de aquisicao do SynkaCore — FONTE UNICA DE VERDADE.
+//
+// Deste arquivo e gerado o codigo do gateway (Go), do no em software (Go) e, no
+// futuro, do firmware embarcado (nanopb) e do console (TypeScript). Nenhuma das
+// pontas escreve o contrato a mao.
+//
+// DISCIPLINA OBRIGATORIA (o gateway aceita todas as versoes ja publicadas, para
+// sempre — nao existe janela de manutencao que alcance 100% da frota):
+//
+//   1. So ACRESCENTAR campos, e sempre `optional`.
+//   2. NUNCA reusar numero de campo. Numero aposentado vira `reserved`.
+//   3. NUNCA mudar o tipo de um campo existente.
+//   4. NUNCA mudar o significado de um campo existente — semantica nova exige
+//      campo novo.
+//
+// ESTAS REGRAS VALEM A PARTIR DA PRIMEIRA IMPLANTACAO. Enquanto nao houver origem
+// em campo, o contrato pode ser reorganizado livremente — e deve ser, porque e a
+// ultima janela barata para arruma-lo.
+//
+// A regra 4 e a que se quebra sem perceber, e a verificacao automatica nao pega:
+// `buf breaking` detecta mudanca de tipo e reuso de numero, mas nao detecta que
+// alguem decidiu que `valor` agora vem em outra unidade. Essa depende de revisao.
+
+syntax = "proto3";
+
+package synkacore.contrato.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/ViktorWalde/SynkaCore/internal/contrato/v1;contratov1";
+
+// ============================================================================
+// POLITICA
+// ============================================================================
+
+// ClasseDeDado classifica o dado pela GARANTIA que ele exige, nao pelo assunto.
+//
+// Cada classe carrega cinco politicas — entrega, saturacao de buffer, latencia
+// maxima, durabilidade local na origem e retencao no gateway. Elas NAO viajam no
+// fio: sao derivadas desta anotacao. E isso que impede as duas pontas de
+// discordarem sobre o que pode ser descartado — a especie de divergencia que so
+// aparece no dia da falha.
+enum ClasseDeDado {
+  CLASSE_DE_DADO_NAO_ESPECIFICADO = 0;
+
+  // Telemetria periodica. Tolera perda: a proxima amostra chega logo e carrega
+  // quase a mesma informacao.
+  CLASSE_DE_DADO_AMOSTRA = 1;
+
+  // Fato que ocorreu. Nao tolera perda silenciosa: nao tem vizinho que o
+  // substitua, e a contagem fica permanentemente errada sem ninguem perceber.
+  CLASSE_DE_DADO_EVENTO_DISCRETO = 2;
+}
+
+extend google.protobuf.MessageOptions {
+  // Anota o tipo de conteudo com sua classe de dado.
+  optional ClasseDeDado classe_de_dado = 50001;
+}
+
+// ============================================================================
+// REMESSA — o que trafega numa requisicao
+// ============================================================================
+
+// Remessa e o lote: tudo que uma origem envia de uma vez.
+//
+// O lote nao e otimizacao, e pre-requisito de viabilidade: sem ele, o fsync
+// sozinho consumiria toda a capacidade do disco do gateway no cenario
+// dimensionado, e uma requisicao HTTPS por amostra seria inviavel numa origem
+// embarcada.
+//
+// Uma remessa pertence a UMA origem e UMA sessao de boot. Isso permite que a
+// confirmacao seja uma faixa de numeros de sequencia em vez de uma lista.
+message Remessa {
+  // Versao do contrato que esta origem fala.
+  //
+  // NAO e portao de compatibilidade. E observabilidade de frota: responde "quais
+  // origens ainda nao foram atualizadas?" sem ir a campo conferir.
+  optional uint32 versao_do_esquema = 1;
+
+  // Instalacao. Necessario porque o produto e replicado em varias plantas e uma
+  // planta pode ter varios gateways.
+  optional string id_da_instalacao = 2;
+
+  // Identidade REIVINDICADA pela origem.
+  //
+  // O gateway compara com a identidade que o transporte provou (mTLS) e recusa
+  // divergencia. Sem essa conferencia, uma origem legitima poderia enviar dados
+  // se passando por outra.
+  //
+  // Unico na instalacao inteira, nunca apenas dentro de um gateway.
+  optional string id_do_dispositivo = 3;
+
+  // Sessao de boot: sorteada a cada partida da origem.
+  //
+  // Uma origem embarcada nao tem relogio de tempo real com bateria — ao ligar,
+  // seu relogio comeca em 1970. Ela NUNCA afirma saber a hora. Este identificador
+  // e o que permite ao gateway ancorar o tempo monotonico da origem ao seu
+  // proprio relogio, e e o que impede os numeros de sequencia de colidirem entre
+  // partidas.
+  optional string id_da_sessao_de_boot = 4;
+
+  repeated Envelope envelopes = 5;
+}
+
+// Envelope e uma mensagem dentro da remessa.
+message Envelope {
+  // Unico dentro da sessao de boot. Compoe a chave de idempotencia junto com
+  // id_do_dispositivo e id_da_sessao_de_boot, e permite ao gateway detectar
+  // lacuna em transito.
+  optional uint64 numero_de_sequencia = 1;
+
+  // Tempo MONOTONICO desde o boot da origem. E o unico tempo que ela tem
+  // autoridade para afirmar. O gateway carimba a recepcao e deriva o instante
+  // estimado; o derivado nunca sobrescreve este valor.
+  optional uint64 tempo_ligado_ms = 2;
+
+  // Numeros 3 a 10 tem tag de 1 byte e ficam reservados aos conteudos frequentes.
+  oneof conteudo {
+    AmostraEscalar amostra_escalar = 3;
+    LeituraDeContador leitura_de_contador = 4;
+    TransicaoDigital transicao_digital = 5;
+    AmostraAgregada amostra_agregada = 6;
+    MudancaDeEstadoDeMaquina mudanca_de_estado_de_maquina = 7;
+    SaudeDaOrigem saude_da_origem = 8;
+    LacunaDeBuffer lacuna_de_buffer = 9;
+    DescritorDaOrigem descritor_da_origem = 10;
+  }
+}
+
+// ConfirmacaoDeRemessa e a resposta do gateway.
+message ConfirmacaoDeRemessa {
+  // Tudo ate este numero, inclusive, esta DURAVEL no diario. A origem pode
+  // liberar o buffer ate aqui.
+  //
+  // Faixa contigua em vez de lista porque a remessa e de uma so origem e uma so
+  // sessao: os numeros sao contiguos por construcao. Duplicatas contam como
+  // sucesso — reentrega e consequencia esperada de entrega ao-menos-uma-vez, nao
+  // anomalia.
+  optional uint64 duravel_ate_a_sequencia = 1;
+
+  // Rejeitados por conteudo invalido. Retransmitir NAO adianta, e a origem deve
+  // descarta-los em vez de tentar para sempre.
+  repeated uint64 sequencias_rejeitadas_definitivamente = 2;
+
+  // Contrapressao: quanto esperar antes da proxima remessa.
+  //
+  // A origem soma jitter aleatorio a este valor. Sem jitter, as origens
+  // sincronizam e a frota inteira reconecta junto — a falha parcial vira total,
+  // que e o modo de falha que derruba o gateway que estava apenas lento.
+  optional uint32 repetir_apos_ms = 3;
+}
+
+// ============================================================================
+// ENDERECAMENTO
+// ============================================================================
+
+// EnderecoDeCanal localiza uma entrada fisica dentro de uma origem.
+//
+// Extraido em mensagem propria, e nao repetido como dois campos soltos em cada
+// conteudo, por uma razao de codigo gerado e nao de bytes: assim a funcao que
+// resolve endereco para ponto de medicao recebe UM argumento tipado, e ninguem
+// consegue trocar a ordem de modulo e canal numa chamada. Dois uint32 adjacentes
+// numa assinatura sao uma armadilha silenciosa — compila, roda, e atribui a
+// leitura ao ponto errado.
+message EnderecoDeCanal {
+  // Placa de expansao ou escravo no barramento. Zero e a propria origem.
+  //
+  // Existe porque a alternativa seria convencionar faixas de indice ("modulo 1 =
+  // canais 100-199"), e convencao nao e garantia: o dia em que alguem passar de
+  // 199 canais, o dado fica errado sem nenhum erro.
+  optional uint32 indice_do_modulo = 1;
+
+  // Entrada dentro do modulo.
+  optional uint32 indice_do_canal = 2;
+}
+
+// ============================================================================
+// CONTEUDOS — AMOSTRAS
+// ============================================================================
+
+// AmostraEscalar e o valor de uma grandeza continua num instante.
+//
+// DECISAO IMPORTANTE: existe UM tipo para todas as grandezas escalares —
+// temperatura, pressao, umidade, vazao, peso, nivel, corrente.
+//
+// Tipos separados seriam estruturas IDENTICAS com nomes diferentes: exatamente a
+// duplicacao que o projeto proibe. A diferenca entre elas nao e estrutural, e
+// semantica — e semantica e configuracao do ponto de medicao, nao formato de
+// mensagem.
+//
+// A origem reporta o CANAL. O gateway resolve canal para ponto de medicao, e dai
+// para grandeza, unidade e faixa valida. A origem continua burra; o gateway deriva.
+message AmostraEscalar {
+  option (classe_de_dado) = CLASSE_DE_DADO_AMOSTRA;
+
+  optional EnderecoDeCanal endereco = 1;
+
+  // Valor na unidade declarada pelo DescritorDaOrigem do canal.
+  //
+  // `float` e nao `double` de proposito: conversores analogico-digitais
+  // industriais tem 12 a 16 bits, e float32 carrega ~7 digitos significativos —
+  // folgado. `double` dobraria os bytes no fio sem acrescentar informacao real.
+  optional float valor = 2;
+}
+
+// AmostraAgregada resume muitas amostras colhidas rapido demais para trafegar.
+//
+// Razao de existir: vibracao e corrente exigem centenas a milhares de amostras
+// por segundo. Esse sinal nao pode ir bruto.
+//
+// A origem calcula os indicadores sobre uma janela. Isso e CONDICIONAMENTO DE
+// SINAL, nao regra de negocio: e o equivalente digital do que um transdutor
+// analogico ja faria em hardware. Decidir que "valor eficaz acima de 5 e alarme"
+// continua proibido na origem — ela nao decide, apenas mede.
+//
+// Sem os campos de janela e contagem, um valor eficaz de 1024 amostras chegaria
+// indistinguivel de uma leitura unica, e qualquer estatistica posterior estaria
+// errada sem aviso.
+message AmostraAgregada {
+  option (classe_de_dado) = CLASSE_DE_DADO_AMOSTRA;
+
+  optional EnderecoDeCanal endereco = 1;
+
+  // Duracao da janela agregada. O tempo ligado do Envelope marca o FIM da janela.
+  optional uint32 janela_ms = 2;
+
+  // Quantas amostras brutas entraram. Necessario para reagregar corretamente ao
+  // consolidar janelas no gateway — media de medias sem peso e errada.
+  optional uint32 quantidade_de_amostras = 3;
+
+  optional float minimo = 4;
+  optional float maximo = 5;
+  optional float media = 6;
+
+  // Valor eficaz. E o indicador que importa em vibracao e corrente alternada,
+  // onde a media tende a zero e nao diz nada.
+  optional float valor_eficaz = 7;
+}
+
+// ============================================================================
+// CONTEUDOS — EVENTOS DISCRETOS
+// ============================================================================
+
+// LeituraDeContador e a contagem ACUMULADA de um canal na sessao de boot.
+//
+// DECISAO IMPORTANTE: acumulada, nunca incremental.
+//
+// Um incremento perdido some para sempre e a contagem fica permanentemente
+// errada. Uma leitura acumulada perdida e recuperada pela proxima: a perda se
+// cura sozinha. Como contagem de producao e numero que o gestor usa para decidir,
+// essa diferenca separa um relatorio confiavel de um plausivel.
+message LeituraDeContador {
+  option (classe_de_dado) = CLASSE_DE_DADO_EVENTO_DISCRETO;
+
+  optional EnderecoDeCanal endereco = 1;
+
+  // Contagem acumulada em UNIDADE INTEIRA, declarada no DescritorDeCanal.
+  //
+  // Inteiro e nao ponto flutuante de proposito: acumulador em float acumula erro
+  // de arredondamento indefinidamente, e o erro cresce justamente quando o numero
+  // fica grande — que e quando alguem vai olhar. Energia usa Wh, nao kWh; volume
+  // usa mL, nao L. A conversao para a unidade de exibicao e do gateway.
+  optional uint64 contagem_acumulada = 2;
+}
+
+// TransicaoDigital registra a mudanca de estado de uma entrada discreta.
+message TransicaoDigital {
+  option (classe_de_dado) = CLASSE_DE_DADO_EVENTO_DISCRETO;
+
+  optional EnderecoDeCanal endereco = 1;
+  optional bool ativo = 2;
+}
+
+// MudancaDeEstadoDeMaquina registra a transicao de estado operacional.
+message MudancaDeEstadoDeMaquina {
+  option (classe_de_dado) = CLASSE_DE_DADO_EVENTO_DISCRETO;
+
+  optional EnderecoDeCanal endereco = 1;
+  optional EstadoDeMaquina estado = 2;
+
+  // Motivo apontado na interface do operador, como CODIGO do catalogo da instalacao.
+  //
+  // Inteiro e nao texto livre: texto livre produz "quebra", "Quebra" e "quebrou"
+  // como motivos distintos, e o relatorio agrupa errado sem ninguem perceber. O
+  // gateway recusa codigo fora do catalogo, entao o dado nasce consistente.
+  //
+  // Ausente significa parada ainda nao classificada — informacao legitima, que
+  // nao deve ser confundida com dado faltando.
+  optional uint32 codigo_do_motivo = 3;
+
+  // Identificador de cracha AFIRMADO, capturado pelo leitor da origem.
+  //
+  // A origem NAO valida o cracha: durante a autonomia de buffer nao ha a quem
+  // perguntar, e guardar credenciais em cada origem multiplicaria a superficie de
+  // ataque pela frota inteira.
+  //
+  // O gateway resolve para a pessoa e guarda os dois valores separados. Cracha
+  // nao reconhecido vira anomalia auditavel, nao registro perdido.
+  //
+  // DADO PESSOAL: identifica um trabalhador. Acesso restrito no modelo de leitura.
+  optional string id_do_cracha_afirmado = 4;
+
+  // Identificador de lote AFIRMADO, quando o operador o informa.
+  //
+  // A associacao autoritativa entre medicao e lote e DERIVADA no gateway, a
+  // partir do registro de qual lote rodou em qual linha e quando — porque assim
+  // ela e recomputavel se o registro do lote for corrigido. Este campo cobre o
+  // caso em que so o operador sabe.
+  optional string id_do_lote_afirmado = 5;
+}
+
+// EstadoDeMaquina declara o estado OBSERVADO. NAO declara como ele afeta a
+// disponibilidade — isso e regra de negocio, vive no gateway e e configuravel por
+// planta, porque plantas discordam legitimamente (algumas descontam setup do
+// tempo programado, outras nao). Codificar a politica no contrato obrigaria mudar
+// o contrato para atender um cliente, que e a coisa mais cara de mudar.
+enum EstadoDeMaquina {
+  ESTADO_DE_MAQUINA_NAO_ESPECIFICADO = 0;
+  ESTADO_DE_MAQUINA_RODANDO = 1;
+
+  // Parada sem classificacao ainda. Legitimo: o operador pode nao ter
+  // classificado, e forcar uma classificacao errada e pior que admitir a falta.
+  ESTADO_DE_MAQUINA_PARADA = 2;
+
+  // Troca de ferramenta ou preparacao. Parada planejada.
+  ESTADO_DE_MAQUINA_SETUP = 3;
+
+  // Maquina saudavel e parada por falta de insumo ou de operador. Separado de
+  // quebra porque e problema de logistica, nao de manutencao — juntos, o
+  // indicador culpa a maquina errada.
+  ESTADO_DE_MAQUINA_OCIOSA = 4;
+
+  // Manutencao preventiva programada. Separado de quebra porque, somados, toda
+  // preventiva bem-feita piora o indicador — e ai ninguem quer fazer preventiva.
+  ESTADO_DE_MAQUINA_MANUTENCAO_PROGRAMADA = 5;
+
+  // Falha nao planejada. E a base do tempo medio entre falhas, e portanto da
+  // manutencao preditiva.
+  ESTADO_DE_MAQUINA_QUEBRA = 6;
+}
+
+// ============================================================================
+// CONTEUDOS — SAUDE E DESCRICAO DA ORIGEM
+// ============================================================================
+
+// SaudeDaOrigem e a telemetria interna de quem produz o dado.
+message SaudeDaOrigem {
+  option (classe_de_dado) = CLASSE_DE_DADO_AMOSTRA;
+
+  // Os DOIS campos de memoria sao obrigatorios e viajam SEPARADOS.
+  //
+  // "Escopo enxuto da imunidade a vazamento de memoria" e afirmacao falsa: quem
+  // aloca numa origem embarcada nao e a logica de negocio, e a infraestrutura —
+  // handshake TLS, serializacao e sobretudo o ciclo de reconexao de rede.
+  //
+  // E o risco real nem e o vazamento classico, e a FRAGMENTACAO: o total livre
+  // continua alto enquanto o maior bloco contiguo encolhe, ate a proxima
+  // alocacao de TLS falhar, tipicamente depois de dias ou semanas.
+  //
+  //   memoria livre alta + maior bloco baixo == fragmentacao avancada
+  //
+  // So o primeiro campo esconderia exatamente a falha que mata a origem em campo.
+  optional uint32 bytes_livres_de_memoria = 1;
+  optional uint32 maior_bloco_livre_em_bytes = 2;
+
+  // Distingue perda por rede de perda por defeito da origem.
+  optional int32 sinal_de_radio_dbm = 3;
+
+  // Denuncia reinicio em laco, que o watchdog mascara com sucesso aparente: a
+  // origem responde, mas nunca fica de pe tempo suficiente para servir.
+  optional uint32 contagem_de_reinicios = 4;
+
+  // Contabilidade da politica de saturacao. Perda aceita continua sendo perda
+  // CONHECIDA, em numeros.
+  optional uint32 registros_descartados = 5;
+
+  // Ocupacao atual do buffer local. Permite alarmar ANTES de saturar.
+  optional uint32 bytes_usados_no_buffer = 6;
+}
+
+// LacunaDeBuffer admite explicitamente que houve descarte.
+//
+// Existe para que perda nunca seja silenciosa: em vez de um buraco invisivel num
+// relatorio, a lacuna vira um fato VISIVEL no dado, com intervalo e contagem. E a
+// diferenca pratica entre um sistema que mente e um que admite o que nao sabe.
+message LacunaDeBuffer {
+  option (classe_de_dado) = CLASSE_DE_DADO_EVENTO_DISCRETO;
+
+  optional uint64 registros_perdidos = 1;
+  optional uint64 primeira_sequencia_perdida = 2;
+  optional uint64 ultima_sequencia_perdida = 3;
+}
+
+// DescritorDaOrigem declara o que esta origem e e o que cada canal mede.
+//
+// Enviado no boot e periodicamente. Baixa frequencia de proposito: assim a
+// descricao do canal NAO precisa viajar em cada amostra, o que economiza a maior
+// parte dos bytes do sistema.
+//
+// Serve de rede de protecao de comissionamento: o gateway compara o que a origem
+// acredita medir com o mapeamento que ele mesmo tem, e denuncia divergencia —
+// canal trocado no painel deixa de ser erro silencioso.
+message DescritorDaOrigem {
+  option (classe_de_dado) = CLASSE_DE_DADO_AMOSTRA;
+
+  optional string versao_do_firmware = 1;
+  optional string modelo_do_hardware = 2;
+  repeated DescritorDeCanal canais = 3;
+
+  // Versao do catalogo de motivos de parada carregada nesta origem.
+  //
+  // Permite ao gateway detectar deriva: se a origem exibe rotulos de uma versao
+  // antiga, os codigos que ela envia podem significar outra coisa. Toda
+  // configuracao replicada na origem declara sua versao, e o gateway confere.
+  optional uint32 versao_do_catalogo_de_motivos = 4;
+}
+
+message DescritorDeCanal {
+  optional EnderecoDeCanal endereco = 1;
+
+  // O que a origem ACREDITA medir. Autoritativo e o mapeamento do gateway; este
+  // valor existe para detectar discordancia entre os dois.
+  optional Grandeza grandeza = 2;
+
+  // Unidade em notacao UCUM (por exemplo: "Cel", "kPa", "L/min", "kg").
+  optional string unidade = 3;
+
+  // Periodo nominal de amostragem, para o gateway saber o que esperar e alarmar
+  // quando um canal fica mudo.
+  optional uint32 periodo_de_amostragem_ms = 4;
+}
+
+enum Grandeza {
+  GRANDEZA_NAO_ESPECIFICADO = 0;
+  GRANDEZA_TEMPERATURA = 1;
+  GRANDEZA_PRESSAO = 2;
+  GRANDEZA_UMIDADE_DO_AR = 3;
+  GRANDEZA_VAZAO = 4;
+  GRANDEZA_MASSA = 5;
+  GRANDEZA_NIVEL = 6;
+  GRANDEZA_CORRENTE_ELETRICA = 7;
+  GRANDEZA_ACELERACAO_DE_VIBRACAO = 8;
+  GRANDEZA_ESTADO_DIGITAL = 9;
+  GRANDEZA_CONTAGEM_DE_PECAS = 10;
+
+  // Qualidade de produto — agroindustria.
+  GRANDEZA_PH = 11;
+  GRANDEZA_CONDUTIVIDADE_ELETRICA = 12;
+
+  // Umidade do MATERIAL, distinta de GRANDEZA_UMIDADE_DO_AR, que e do ar. Sao
+  // grandezas diferentes e confundi-las inutiliza o dado de secagem.
+  GRANDEZA_UMIDADE_DE_GRAO = 13;
+  GRANDEZA_BRIX = 14;
+
+  // Mecanicas.
+  //
+  // Rotacao costuma ser indispensavel junto de vibracao: amplitude de vibracao
+  // sem a rotacao correspondente e quase ininterpretavel, porque a assinatura
+  // esperada muda com a velocidade.
+  GRANDEZA_ROTACAO = 15;
+  GRANDEZA_TORQUE = 16;
+  GRANDEZA_VELOCIDADE_LINEAR = 17;
+
+  // Eletricas.
+  GRANDEZA_TENSAO = 18;
+  GRANDEZA_POTENCIA_ATIVA = 19;
+
+  // Energia acumulada usa LeituraDeContador, nunca AmostraEscalar: e um
+  // acumulador monotonico, e leitura acumulada perdida se recupera sozinha.
+  GRANDEZA_ENERGIA_ELETRICA = 20;
+}

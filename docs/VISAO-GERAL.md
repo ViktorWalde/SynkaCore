@@ -1,209 +1,285 @@
 # SynkaCore — Visão Geral Visual
 
-Um mapa intuitivo do projeto: o que ele faz, como as peças se conectam e o que acontece em cada
-cenário. Para o mergulho profundo no código, veja o guia de estudo do time.
+Um mapa intuitivo do projeto: o que ele faz, como as peças se conectam e o que acontece em
+cada cenário.
 
 ---
 
 ## O que é, em uma imagem
 
-O SynkaCore é a ponte confiável entre o **chão de fábrica (OT)** e os **sistemas de gestão (IT)**.
-Ele coleta, normaliza, guarda e expõe os dados — e **não perde nada** se o banco cair.
+O SynkaCore é a ponte confiável entre o **chão de fábrica (OT)** e os **sistemas de gestão
+(IT)**. Ele coleta, valida, torna durável e expõe os dados — e **não perde nada**.
 
 ```mermaid
 flowchart LR
-    subgraph OT["Chão de fábrica (OT)"]
-        CLP["CLP / Sensores"]
+    subgraph OT["🏭 Chão de fábrica"]
+        NO["synkacore-no<br/>origem do dado"]
     end
-    subgraph SC["SynkaCore"]
-        COL["Collector<br/>(worker contínuo)"]
-        BUF[("Buffer local<br/>SQLite")]
-        API["API REST"]
+    subgraph GW["⚙️ synkacore-gateway"]
+        ING["ingestão"]
+        DIA[("diário SQLite<br/>registro autoritativo")]
+        PRO["projetor"]
+        APR["apresentação"]
     end
-    DB[("TimescaleDB<br/>séries temporais")]
-    subgraph IT["Gestão (IT)"]
-        CONS["Dashboards / ERP / MES"]
+    subgraph IT["📊 Escritório"]
+        GRA["Grafana"]
+        OPE["operador"]
     end
+    TS[("TimescaleDB<br/>modelo de leitura")]
 
-    CLP -->|"OPC UA / simulação"| COL
-    COL -->|"grava leituras"| DB
-    COL -.->|"fallback se o DB cair"| BUF
-    BUF -.->|"sincroniza quando o DB volta"| DB
-    API -->|"consulta"| DB
-    CONS -->|"GET /readings, /health"| API
+    NO -->|"remessa protobuf"| ING
+    ING -->|"grava ANTES de confirmar"| DIA
+    ING -.->|"confirma até a sequência N"| NO
+    DIA --> PRO --> TS
+    TS --> GRA
+    DIA --> APR --> OPE
 ```
 
 ---
 
-## As quatro peças (módulos)
+## A mudança que reorganizou tudo
 
-O projeto é um Maven multi-módulo em **Clean Architecture**: a dependência sempre aponta para
-dentro, em direção ao núcleo puro.
+Vale ver as duas versões lado a lado, porque a diferença explica quase todo o resto.
+
+```mermaid
+flowchart LR
+    subgraph A["V1.x — o banco no caminho crítico"]
+        W["Worker"] -->|"grava"| DB1[("TimescaleDB")]
+        W -.->|"SE o banco cair"| BUF[("buffer de<br/>emergência")]
+        BUF -.->|"sincroniza depois"| DB1
+    end
+```
+
+```mermaid
+flowchart LR
+    subgraph B["V2.0 — o banco fora do caminho crítico"]
+        ING["ingestão"] -->|"SEMPRE"| DIA[("diário<br/>durável")]
+        DIA -->|"assíncrono"| DB2[("TimescaleDB")]
+    end
+```
+
+Na V1.x, "zero perda" dependia de o caminho pontilhado funcionar no pior momento possível —
+e a auditoria da V1.2 encontrou esse caminho **desligado por um erro de tipo**: o buffer
+estava registrado e nunca era usado.
+
+Na V2.0 não há caminho pontilhado. Se o diário falha, a remessa **não é confirmada** e o nó
+retransmite. Zero perda deixou de ser promessa e virou consequência de só existir um caminho.
+
+---
+
+## As peças
 
 ```mermaid
 flowchart TD
-    COL["synkacore-collector<br/>app: coleta"] --> INFRA["synkacore-infrastructure<br/>banco, protocolos, resiliência"]
-    API["synkacore-api<br/>app: REST"] --> INFRA
-    INFRA --> DOM["synkacore-domain<br/>tipos, contratos, configs (núcleo puro)"]
+    ADA["adaptador<br/>HTTP, SQLite, TimescaleDB, codec"] --> APL["aplicação<br/>ingestão, projeção"]
+    APL --> DOM["domínio<br/>envelope, classes, identidades, tempo"]
+    ADA --> PLA["plataforma<br/>falha, relógio, resiliência"]
+    APL --> PLA
 ```
 
-| Módulo | Papel | Exemplos |
+| Camada | Papel | Exemplos |
 |---|---|---|
-| **domain** | Núcleo puro: o *quê* | `SensorReading`, `ProtocolReader`, `ReadingRepository` |
-| **infrastructure** | Tecnologia: o *como* | TimescaleDB, SQLite, Resilience4j, Eclipse Milo, simulador |
-| **collector** | App que coleta | `SensorCollectorWorker` + wiring |
-| **api** | App que expõe | `GET /readings`, `GET /health` |
-
-A vantagem: trocar a **fonte de dados** (simulador → OPC UA real) é mudar **um bean**, sem tocar no
-worker.
+| **domínio** | Regras. Sem I/O, sem framework, sem relógio. | `Envelope`, `ClasseDeDado`, `AncoraDeSessaoDeBoot`, `IDDoPontoDeMedicao` |
+| **aplicação** | Casos de uso | `ingestao.Servico`, `projecao.Servico` |
+| **adaptador** | Entrada e saída | `ingressohttp`, `diariosqlite`, `projetortimescale`, `codecdefio` |
+| **plataforma** | Transversal, não depende de ninguém | `falha`, `relogio`, `resiliencia` |
 
 ---
 
-## Fluxo normal de coleta
-
-A cada intervalo configurado, o worker lê uma medição e a grava. Em operação saudável, o buffer fica
-vazio.
+## Fluxo normal
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant W as Worker
-    participant P as ProtocolReader<br/>(simulador)
-    participant R as Repositório resiliente
-    participant DB as TimescaleDB
+    participant NO as synkacore-no
+    participant ING as Ingestão
+    participant DIA as Diário SQLite
+    participant PRO as Projetor
+    participant TS as TimescaleDB
 
-    loop a cada intervalMs
-        W->>P: read(tag)
-        P-->>W: SensorReading (valor + unidade + tempo)
-        W->>R: save(reading)
-        R->>DB: INSERT (sob a pipeline de resiliência)
-        DB-->>R: ok
-        R->>R: syncBuffer() — buffer vazio, nada a fazer
+    loop a cada intervalo de amostragem
+        NO->>NO: lê a câmara, enfileira no buffer
+    end
+
+    Note over NO: o lote fecha quando o orçamento<br/>de latência da classe vence
+
+    NO->>ING: remessa (protobuf, N envelopes)
+    ING->>ING: valida cada envelope UMA vez
+    ING->>DIA: grava o lote numa transação
+    DIA-->>ING: durável
+    ING-->>NO: confirmado até a sequência N
+    NO->>NO: libera o buffer até N
+
+    loop a cada 2 s
+        PRO->>DIA: lê a partir do cursor
+        PRO->>TS: projeta (idempotente)
+        PRO->>DIA: avança o cursor
     end
 ```
 
+Repare na **ordem**: a confirmação só sai depois de o diário confirmar a transação. E o
+cursor da projeção só avança depois de a gravação estar no TimescaleDB.
+
+Nos dois casos a ordem inversa pareceria equivalente e não é. Confirmar antes de gravar faria
+o nó liberar o buffer de dado que não existe. Avançar o cursor antes de projetar perderia o
+intervalo para sempre. Nesta ordem, uma queda apenas **refaz trabalho** — e refazer é
+inofensivo, porque as duas gravações são idempotentes.
+
 ---
 
-## O que acontece quando o banco cai
-
-Aqui está o diferencial. A gravação tenta de novo, o disjuntor protege o banco, e a leitura é desviada
-para o buffer local — **sem perder dado** e **sem matar o worker**.
+## O que acontece quando o gateway cai
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant W as Worker
-    participant R as Repositório resiliente
-    participant Pipe as Pipeline<br/>(CircuitBreaker → Retry → Timeout)
-    participant DB as TimescaleDB
-    participant BUF as Buffer SQLite
-    participant ST as Estado do Worker
+    participant AM as Laço de amostragem
+    participant BUF as Buffer do nó
+    participant DES as Laço de despacho
+    participant GW as Gateway
 
-    W->>R: save(reading)
-    R->>Pipe: executa INSERT
-    Pipe->>DB: tentativa 1, 2, 3 (backoff ~2s, 4s, 8s)
-    DB--xPipe: falha em todas
-    Pipe->>ST: circuit breaker abre → DEGRADADO
-    Pipe--xR: exceção
-    R->>BUF: savePending(reading)
-    Note over W,BUF: o worker continua coletando,<br/>acumulando no buffer
-```
+    Note over GW: gateway cai
 
-E quando o banco volta, o buffer é drenado em ordem cronológica:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant R as Repositório resiliente
-    participant DB as TimescaleDB
-    participant BUF as Buffer SQLite
-    participant ST as Estado do Worker
-
-    Note over DB: banco volta; circuit breaker fecha
-    R->>DB: próxima gravação normal
-    DB-->>R: ok
-    ST->>ST: CONECTADO
-    R->>BUF: getPending(lote)
-    loop cada pendência, em ordem
-        R->>DB: INSERT
-        DB-->>R: ok
-        R->>BUF: markAsSynced(id)
+    loop NUNCA para
+        AM->>BUF: amostra em período fixo
     end
-    Note over R,BUF: repete a cada gravação até o buffer esvaziar
+
+    DES->>GW: remessa
+    GW--xDES: conexão recusada
+    DES->>BUF: devolve o lote NO INÍCIO
+    DES->>DES: recuo exponencial com jitter
+
+    Note over AM,DES: os dois laços são goroutines<br/>INDEPENDENTES: o recuo dorme,<br/>e a amostragem não sente
+
+    Note over GW: gateway volta
+    DES->>GW: remessa (a mesma, retransmitida)
+    GW-->>DES: confirmado
 ```
+
+Os dois laços serem independentes não é detalhe. Numa versão anterior eles dividiam um
+`select`, e o recuo do despacho — que **dorme** — bloqueava o temporizador de amostragem: uma
+queda de 12 segundos produziu 15 segundos **sem nenhuma medição**.
+
+A distinção que isso revela:
+
+- O buffer protege contra perder dado **no caminho**. Para isso, funcionava.
+- Dado que **nunca foi medido** não está em buffer nenhum. Nenhuma retransmissão o traz de
+  volta.
 
 ---
 
-## Os três estados do Worker
-
-O worker sempre sabe em que situação está, e isso aparece nos logs e (futuramente) em métricas.
+## O que acontece quando o TimescaleDB cai
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CONECTADO
-    CONECTADO --> RECONECTANDO: falha → retry em andamento
-    RECONECTANDO --> CONECTADO: gravação voltou
-    RECONECTANDO --> DEGRADADO: circuit breaker abriu
-    CONECTADO --> DEGRADADO: falha no ciclo
-    DEGRADADO --> CONECTADO: banco recuperado
+    [*] --> Conectado
+    Conectado --> Reconectando: falha, retentativa em andamento
+    Reconectando --> Conectado: projeção voltou
+    Reconectando --> Degradado: disjuntor abriu
+    Degradado --> Conectado: banco recuperado
 ```
+
+E o que **não** acontece: nada com a aquisição. O nó continua entregando, o gateway continua
+confirmando, o diário continua crescendo. O que para é o espelhamento para o banco de
+consulta.
+
+Por isso o `/saude` reporta os dois estágios separados:
+
+```json
+{"journal":"available","projection":"degraded", ...}
+```
+
+| Linha | Se falhar significa | Acorda alguém? |
+|---|---|---|
+| `journal` | O sistema está perdendo a capacidade de **aceitar** dado | Sim |
+| `projection` | O dado está salvo; os dashboards estão atrasados | Não |
+
+Juntar as duas num único `healthy` faria o operador tratar uma queda do TimescaleDB como
+emergência de aquisição.
 
 ---
 
-## Stack tecnológica
+## As duas classes de dado
 
-| Camada | Tecnologia |
-|---|---|
-| Linguagem / framework | Java 25 + Spring Boot 3.5 |
-| Build | Maven (multi-módulo) |
-| Banco de séries temporais | PostgreSQL + TimescaleDB |
-| Acesso a dados | Spring `JdbcClient` |
-| Buffer local | SQLite |
-| Resiliência | Resilience4j (circuit breaker, retry, timeout) |
-| Protocolo industrial | OPC UA (Eclipse Milo) |
-| Logging | SLF4J + Logback |
-| Testes | JUnit 5, Mockito, Testcontainers |
+Toda a política do sistema sai daqui. O dado é classificado pela **garantia que exige**, não
+pelo assunto.
+
+```mermaid
+flowchart TD
+    C{"ClasseDeDado"}
+    C -->|"telemetria periódica"| A["ClasseAmostra"]
+    C -->|"fato que ocorreu"| E["ClasseEventoDiscreto"]
+
+    A --> A1["melhor esforço"]
+    A --> A2["descartar mais antigo"]
+    A --> A3["5 s de latência"]
+    A --> A4["em memória"]
+    A --> A5["7 d bruto → 1 ano agregado"]
+
+    E --> E1["ao menos uma vez"]
+    E --> E2["registrar lacuna"]
+    E --> E3["200 ms de latência"]
+    E --> E4["em disco, sempre"]
+    E --> E5["5 anos, íntegro"]
+```
+
+Uma amostra de temperatura e uma parada de máquina têm requisitos **opostos**: a primeira
+tolera perda porque a próxima repõe quase a mesma informação; a segunda não tem vizinha que
+a substitua, e a contagem fica permanentemente errada sem ninguém perceber.
+
+É por isso que, quando o buffer do nó satura, ele sacrifica a **amostra mais antiga** antes
+de qualquer evento — e se só restarem eventos, o descarte vira um **marcador de lacuna
+visível no dado**, com intervalo e contagem.
+
+> A diferença prática entre um sistema que mente e um que admite o que não sabe.
+
+---
+
+## Os três tempos, separados
+
+```mermaid
+flowchart LR
+    NO["nó"] -->|"tempo ligado<br/>(monotônico, bruto)"| ENV["Envelope"]
+    GW["gateway"] -->|"instante observado<br/>(relógio de parede)"| ENV
+    ENV --> ANC["âncora da sessão"]
+    ANC -->|"deriva"| EST["instante estimado"]
+```
+
+O nó **nunca afirma saber a hora** — sem relógio de tempo real com bateria, ao ligar ele
+começa em 1970. Ele reporta apenas tempo monotônico desde o boot.
+
+O gateway carimba a recepção e ancora a sessão. Os três valores ficam separados e auditáveis,
+e **o derivado jamais sobrescreve o bruto**: se a estimativa estiver errada, o original ainda
+permite recomputar.
+
+E o relógio do próprio gateway é vigiado: a âncora guarda a leitura de **parede** e a
+**monotônica** juntas. Um acerto de hora move só a parede, então a divergência vira
+mensurável e a série daquela sessão é marcada como temporalmente suspeita — em vez de ficar
+silenciosamente deslocada.
 
 ---
 
 ## Como rodar (resumo)
 
 ```bash
-# 1) Banco (TimescaleDB) — SQL de criação da tabela em docs/V1.0.md
-docker run -d --name synkacore-timescaledb \
-  -e POSTGRES_PASSWORD=synkacore -e POSTGRES_DB=synkacore -p 5432:5432 \
-  timescale/timescaledb:latest-pg17
+# Sem infraestrutura nenhuma — a aquisição funciona completa
+make compilar
+./bin/synkacore-gateway     # terminal 1
+./bin/synkacore-no          # terminal 2
 
-# 2) Build + testes
-mvn clean verify
+curl http://127.0.0.1:8080/saude
+curl 'http://127.0.0.1:8080/leituras?limite=10'
 
-# 3) Rodar (terminais separados)
-mvn -pl synkacore-collector spring-boot:run
-mvn -pl synkacore-api spring-boot:run
-
-# 4) Consultar
-curl http://localhost:8080/readings
-curl http://localhost:8080/health
-```
-
----
-
-## Estrutura de pastas
-
-```
-SynkaCore/
-├── synkacore-domain/          # tipos, contratos, configs, exceções (núcleo puro)
-├── synkacore-infrastructure/  # persistência, protocolos, resiliência, simulação
-├── synkacore-collector/       # app: worker de coleta contínua
-├── synkacore-api/             # app: REST de consulta + health
-├── config/                    # configs de qualidade (spotbugs, pmd, checkstyle)
-└── docs/                      # documentação (esta visão geral, versões, trade-offs, qualidade)
+# Com o modelo de leitura e os dashboards
+make infra
+make gateway-completo
+make no
 ```
 
 ---
 
 ## Para se aprofundar
 
-- **Versões e o que cada uma entregou**: `docs/V1.0.md`, `V1.1.md`, `V1.2.md`.
-- **Decisões e seus custos**: `docs/TRADE-OFFS.md`.
-- **Garantias de qualidade do build**: `docs/QUALIDADE.md`.
+- **[V2.0](V2.0.md)** — a reescrita: por que foi antecipada e o que foi encontrado no caminho.
+- **[Trade-offs](TRADE-OFFS.md)** — decisões e seus custos.
+- **[Qualidade](QUALIDADE.md)** — os portões do build.
+- **Histórico V1.x** — [V1.0](V1.0.md) · [V1.1](V1.1.md) · [V1.2](V1.2.md).

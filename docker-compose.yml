@@ -1,22 +1,68 @@
+# Infraestrutura de CONSULTA do SynkaCore.
+#
+# O que sobe aqui e o segundo estagio do sistema — o modelo de leitura e sua
+# apresentacao. O gateway e o no NAO estao aqui de proposito: eles sao binarios
+# unicos e autocontidos, e e assim que sao instalados numa planta. Empacota-los em
+# container para desenvolvimento criaria uma diferenca entre o que se testa e o que
+# se implanta, que e precisamente o tipo de divergencia que este projeto evita.
+#
+# Consequencia pratica: o gateway funciona SEM nada disto no ar. A aquisicao grava
+# no diario local e nao perde nada. Isto aqui e o que faz o dado virar grafico.
+
 services:
   timescaledb:
-    image: timescale/timescaledb:latest-pg17
+    # Nome QUALIFICADO com o registro, e nao a forma curta.
+    #
+    # Docker resolve "timescale/timescaledb" para o Docker Hub por padrao; Podman,
+    # nao — ele exige a escolha explicita e, sem terminal interativo, simplesmente
+    # falha. Como o projeto e desenvolvido em ambos e instalado em maquina de
+    # cliente, a forma qualificada e a unica que funciona nos dois sem configuracao
+    # de quem for rodar.
+    image: docker.io/timescale/timescaledb:latest-pg17
     container_name: synkacore-timescaledb
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: synkacore
       POSTGRES_DB: synkacore
+      POSTGRES_USER: synkacore
+      POSTGRES_PASSWORD: synkacore
     ports:
       - "5432:5432"
     volumes:
-      - synkacore-pgdata:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - timescaledb:/var/lib/postgresql/data
+      # As migracoes sao aplicadas na criacao do volume. O gateway NAO altera o
+      # proprio esquema na partida, de proposito: um servico que migra sozinho
+      # transforma um rollback de binario numa migracao reversa nao planejada.
+      - ./migracoes:/docker-entrypoint-initdb.d:ro,z
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d synkacore"]
+      test: ["CMD-SHELL", "pg_isready -U synkacore -d synkacore"]
       interval: 5s
       timeout: 5s
-      retries: 5
-    restart: unless-stopped
+      retries: 10
+
+  grafana:
+    image: docker.io/grafana/grafana:latest
+    container_name: synkacore-grafana
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Sem telemetria e sem busca de plugins: a planta nao tem internet, e um
+      # painel que trava esperando um endpoint externo e um painel inutil.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana:/var/lib/grafana
+      # Fontes de dados e paineis como CODIGO, versionados.
+      #
+      # E o argumento decisivo da escolha do Grafana, e ele fica mais forte com
+      # produto replicado em varias plantas: sem provisionamento versionado, cada
+      # instalacao exigiria remontar dashboards a mao. Com dezenas de plantas, e a
+      # diferenca entre um `git clone` e trabalho manual recorrente.
+      - ./implantacao/grafana:/etc/grafana/provisioning:ro,z
 
 volumes:
-  synkacore-pgdata:
+  timescaledb:
+  grafana:

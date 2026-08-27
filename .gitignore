@@ -1,51 +1,25 @@
-# Maven
-target/
-**/target/
-pom.xml.tag
-pom.xml.releaseBackup
-pom.xml.versionsBackup
-release.properties
-dependency-reduced-pom.xml
+# Binários compilados
+/bin/
+synkacore-gateway
+synkacore-no
 
-# Java
-*.class
-hs_err_pid*
-
-# IDEs
-.idea/
-*.iml
-.vscode/
-.settings/
-.project
-.classpath
-.factorypath
-
-# Logs
-logs/
-**/logs/
-*.log
-
-# Databases / local buffers
+# Estado local de execução — nunca versionado
+/diario/
+/dados/
 *.db
-*.sqlite
-*.sqlite3
-**/buffer/
+*.db-wal
+*.db-shm
 
-# OPC UA PKI store
-**/pki/
+# Saída de teste e cobertura
+*.out
+*.test
+cobertura.html
 
-# Environment configs
-application-local.yml
-application-local.properties
+# O código gerado do contrato (*.pb.go) É VERSIONADO de propósito: o projeto
+# precisa compilar com `go build` puro, sem protoc instalado, numa planta sem
+# internet. Regerar é `make contrato`, e o diff entra na revisão.
 
-# Tooling
-.claude/
-
-# Notas pessoais (fora do versionamento)
-prompt-atualizar-memoria-claude.md
-docsPrivate/
-
-# OS
-.DS_Store
-Thumbs.db
-.directory
+# Ferramentas e editores
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,21 @@
+# Fonte de dados provisionada como codigo.
+#
+# Somente LEITURA de propósito. O que e exposto ao lado de escritorio nunca alcanca
+# o caminho de aquisicao — e a conta que o Grafana usa nao deveria nem poder gravar.
+apiVersion: 1
+
+datasources:
+  - name: SynkaCore
+    type: postgres
+    uid: synkacore
+    url: timescaledb:5432
+    user: synkacore
+    secureJsonData:
+      password: synkacore
+    jsonData:
+      database: synkacore
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: true
+    isDefault: true
+    editable: false

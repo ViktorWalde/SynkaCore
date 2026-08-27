@@ -1,268 +1,413 @@
 # SynkaCore — Trade-offs Arquiteturais
 
-Documento honesto sobre as decisões que abrem mão de algo para priorizar outra coisa. Nenhuma arquitetura é perfeita. Cada escolha tem custo. Este documento existe para que o custo de cada escolha seja explícito, e para que decisões futuras de evolução tenham contexto sobre o porquê das escolhas atuais.
+Documento honesto sobre as decisões que abrem mão de algo para priorizar outra coisa. Nenhuma
+arquitetura é perfeita, e cada escolha tem custo. Este documento existe para que o custo seja
+explícito, e para que decisões futuras tenham contexto sobre o porquê das atuais.
+
+> Os trade-offs da implementação Java V1.x estão preservados em
+> [`legado/java-v1.2/`](../legado/java-v1.2/) junto com o código. Vários deles foram
+> **resolvidos** pela reescrita, e onde isso aconteceu está anotado abaixo.
 
 ---
 
-## Buffer local em SQLite
+## O diário como caminho primário, e não como emergência
 
 ### A escolha
-Buffer local em SQLite com tabela append-only.
+
+Toda remessa vai para um diário SQLite local **antes de qualquer confirmação**. Um projetor
+assíncrono alimenta o TimescaleDB depois.
 
 ### O que se prioriza
-Simplicidade operacional, garantia de durabilidade ACID, ausência de servidor para gerenciar, arquivo único portável, zero custo de licença.
+
+Que "zero perda" deixe de ser uma promessa e vire consequência estrutural. Não existe caminho
+de exceção a manter funcionando, porque não existe caminho de exceção.
 
 ### Do que se abre mão
-- **Throughput de escrita massivo**: SQLite faz lock de banco inteiro durante escrita. Para múltiplas threads escrevendo em paralelo a alta frequência, é gargalo. RocksDB ou LMDB teriam melhor performance concorrente.
-- **Replicação nativa**: SQLite não replica entre nós. Se o disco da máquina morrer, o buffer morre junto. Aceitável porque o buffer é transitório e os dados sobreviventes estão no TimescaleDB.
-- **Queries analíticas no buffer**: SQLite suporta SQL completo mas o buffer não foi projetado para isso. É fila, não banco analítico.
+
+- **Latência até o dashboard.** O dado aparece no Grafana com o atraso do ciclo de projeção
+  (2 s de padrão, mais o lote). Na V1.x ele aparecia na hora, porque a escrita era direta.
+- **Escrita dupla.** O mesmo dado é gravado duas vezes: no diário e no banco de consulta.
+  Custa I/O e disco.
+- **Um componente a mais para operar.** O projetor tem estado próprio (o cursor) e pode
+  ficar para trás sem que nada mais pareça errado — daí `/saude` reportar os dois estágios
+  separados.
 
 ### Quando reconsiderar
-Se o volume de leituras passar de 100 por segundo sustentado, ou se houver necessidade de buffer compartilhado entre múltiplas instâncias do Collector.
+
+Se surgir requisito de latência **fim a fim** abaixo de um segundo até a tela. Aí valeria uma
+escrita direta em paralelo à projeção — mas só depois de reconhecer que isso reintroduz o
+caminho duplo que esta decisão eliminou.
 
 ---
 
-## Sincronização do buffer dentro de save
+## SQLite em Go puro, e não `mattn/go-sqlite3`
 
 ### A escolha
-O `ResilientReadingRepository` sincroniza o buffer no mesmo método que grava no primário, em vez de ter um serviço agendado separado com timer próprio.
+
+`modernc.org/sqlite`, que é SQLite transpilado para Go.
 
 ### O que se prioriza
-Simplicidade. Uma classe, um fluxo, sem coordenação de threads. Sincronização acontece quando há "garantia" de que o primário voltou, porque a gravação atual passou.
+
+O binário verdadeiramente estático. `mattn/go-sqlite3` usa cgo, é o SQLite em C de verdade,
+e **quebra a propriedade que justificou a linguagem**: implantar deixaria de ser copiar um
+arquivo.
 
 ### Do que se abre mão
-- **Throughput durante recuperação**: cada `save` que sincroniza 10 leituras espera essas 10 gravações terminarem antes de retornar. Se o Worker está produzindo a 1Hz e o sync está drenando a 5Hz, o Worker fica parcialmente bloqueado durante recuperação.
-- **Drenagem em paralelo**: um serviço separado poderia drenar o buffer enquanto o Worker continua coletando, dobrando o throughput durante recuperação.
+
+- **Velocidade do driver.** O transpilado é mais lento que o C nativo.
+- **Proximidade do upstream.** Uma correção do SQLite chega depois, via retranspilação.
+
+### Por que o custo não morde
+
+Com lote e *group commit*, o diário faz **dezenas de transações por segundo**, não milhares.
+Desempenho de driver é irrelevante nessa faixa. Ganhar velocidade que não falta pagando com a
+única propriedade que importa seria o pior negócio possível.
 
 ### Quando reconsiderar
-Se em produção real medirmos que o tempo de `syncBuffer` está aumentando a latência do ciclo do Worker em mais de 20%.
+
+Se a carga subisse a ponto de o driver aparecer num perfil de CPU. Hoje o gargalo é o
+`fsync`, e ele é do disco, não do driver.
 
 ---
 
-## Estado do Worker com volatile em vez de máquina de estados formal
+## `synchronous = FULL` no diário
 
 ### A escolha
-`WorkerStateTrackerImpl` usa um campo `volatile` para representar o estado atual, com transições simples sem validação.
+
+O SQLite espera o dado chegar ao disco antes de confirmar a transação.
 
 ### O que se prioriza
-Performance, simplicidade, leitura cross-thread sem locks.
+
+Que a confirmação ao nó signifique o que ela diz. Com `NORMAL`, a transação confirma antes de
+o dado estar no disco: numa queda de energia — que em planta industrial é rotina, não exceção
+— o gateway teria confirmado, o nó teria liberado o buffer, e o dado não existiria em lugar
+nenhum.
 
 ### Do que se abre mão
-- **Transições inválidas**: nada impede transição direta de CONECTADO para DEGRADADO sem passar por RECONECTANDO. Em sistemas com regras estritas de estado, isso seria problema. Aqui é aceitável porque o estado é informativo, não controle.
-- **Histórico de transições**: a transição anterior é apagada quando a nova chega. Não há log estruturado de quando o sistema entrou e saiu de cada estado. Os logs textuais cobrem isso mas não permitem queries.
-- **Lógica condicional na transição**: máquina de estados formal permitiria "só transita para X se condição Y". Aqui qualquer notificação é aplicada imediatamente.
 
-### Quando reconsiderar
-Quando o estado do Worker for usado para tomada de decisão crítica (ex: bloquear escrita), não apenas observabilidade. Aí máquina de estados formal com biblioteca como Spring StateMachine faz sentido.
+- **Taxa de transações.** `FULL` custa um `fsync` por transação.
+
+### Por que o custo está pago
+
+Pelo **lote**. Um `fsync` serve uma remessa inteira. Sem lote, o `fsync` sozinho consumiria
+toda a capacidade do disco no cenário dimensionado; com lote de 100, cai para a faixa de 1%.
+
+É por isso que o lote não é otimização — é pré-requisito de viabilidade, e é o que torna esta
+decisão barata.
 
 ---
 
-## Decorator Pattern para resiliência de persistência
+## Uma conexão de escrita no diário
 
 ### A escolha
-`ResilientReadingRepository` envolve `SensorReadingRepository` e `SensorReadingLocalBufferRepository`, expondo uma única interface `ReadingRepository`.
+
+`SetMaxOpenConns(1)`.
 
 ### O que se prioriza
-Separação de responsabilidades, princípio aberto/fechado, Worker desacoplado de detalhes de fallback.
+
+Eliminar uma classe inteira de defeito. SQLite permite exatamente um escritor por vez; com
+várias conexões, o excedente não ganha paralelismo — ganha `SQLITE_BUSY`, que é um modo de
+falha a tratar em vez de uma condição a evitar.
 
 ### Do que se abre mão
-- **Configuração do DI fica mais complexa**: três classes registradas em camadas, com beans explícitos e o decorator marcado `@Primary`. Mais código de wire-up.
-- **Ordem das camadas é frágil**: se alguém registrar o `SensorReadingRepository` diretamente como `ReadingRepository` em outro contexto que consuma a Infrastructure, vai bypassar todo o sistema de buffer sem erro. Foi exatamente o bug 1 que aconteceu durante a V1.2.
-- **Stack trace de exceções fica mais profundo**: ao depurar, é preciso navegar por mais uma camada de chamada.
+
+- **Leitura concorrente com escrita.** O projetor lê pela mesma conexão que a ingestão usa
+  para gravar, então eles se serializam. O WAL já permitiria separá-los.
 
 ### Quando reconsiderar
-Se o número de decorators encadeados crescer (ex: adicionar cache, métricas, tracing), considerar Chain of Responsibility ou pipeline explícito.
+
+Quando medição real mostrar a projeção competindo com a ingestão. Fazer isso agora seria
+otimizar por intuição um recurso que está praticamente ocioso.
 
 ---
 
-## Event listeners via DatabaseResiliencePipelineBuilder
+## Cursor de projeção, e não coluna `projetado` no diário
 
 ### A escolha
-Pipeline construída em classe dedicada injetada via DI, permitindo que os event listeners usem `WorkerStateTracker` e um logger injetados.
+
+O avanço da projeção vive numa tabela própria; o diário é append-only.
 
 ### O que se prioriza
-Testabilidade, formatação consistente de logs, fonte única de verdade para estado do Worker.
+
+Três coisas ao mesmo tempo: o diário permanece append-only (marcar linha exigiria um `UPDATE`
+por registro projetado, dobrando a escrita no caminho mais quente); mais de um consumidor
+pode avançar independentemente sem uma coluna nova por consumidor; e a retomada após queda é
+uma leitura, não uma varredura.
 
 ### Do que se abre mão
-- **Configuração inline mais legível**: a forma idiomática mais comum com Resilience4j é anotar métodos com `@CircuitBreaker`/`@Retry` e configurar via `application.yml`, usando um logger estático nos listeners. O builder dedicado é menos comum, mais código.
-- **Pipeline configurável por chamador**: cada serviço que quiser uma pipeline diferente precisa de seu próprio builder. Para a V1.2 não é problema porque só temos uma pipeline (database).
 
-### Quando reconsiderar
-Se em V2.0+ o middleware tiver múltiplas pipelines (database, MQTT, HTTP), considerar registrar beans de pipeline nomeados e voltar à configuração declarativa.
+- **Saber, olhando uma linha, se ela já foi projetada.** A resposta exige comparar o `id`
+  com o cursor.
+
+### Comparação com a V1.x
+
+A V1.x usava uma flag `synced` no buffer e **nunca deletava**, o que os próprios trade-offs
+da época registravam como problema: o arquivo cresceria a centenas de MB ou GB sem política
+que o contivesse, e consultas `WHERE synced = 0` ficariam progressivamente mais lentas.
+Resolvido: ver a poda, abaixo.
 
 ---
 
-## SyncBatchSize default 10 como minimum viable
+## Poda com duas condições, e não uma
 
 ### A escolha
-Valor default conservador, configurável via `application.yml`.
+
+Um registro só sai do diário se estiver **abaixo de todos os cursores** *e* for mais antigo
+que a janela de retenção (7 dias de padrão).
 
 ### O que se prioriza
-Segurança: 10 é pouco o suficiente para não sobrecarregar o primário durante recuperação, mesmo em hardware modesto.
+
+As duas condições cobrem falhas opostas, e nenhuma sozinha basta:
+
+- Só a idade apagaria dado que a projeção ainda não consumiu, durante uma parada prolongada
+  do banco — exatamente o cenário em que o diário é a única cópia existente.
+- Só o cursor apagaria o dado assim que projetado, e um erro descoberto na projeção seria
+  irrecuperável.
 
 ### Do que se abre mão
-- **Velocidade de recuperação**: queda de 1 hora com 1Hz gera 3600 leituras pendentes. Com batch de 10 e gravação a cada 2 segundos, leva 12 minutos para drenar.
-- **Adaptação automática**: o valor é estático. Não se ajusta dinamicamente conforme a saúde do banco ou carga do Worker. Sistema adaptativo seria mais robusto mas exige medição contínua.
+
+- **Disco.** Sete dias de dado bruto ficam retidos mesmo depois de projetados.
 
 ### Quando reconsiderar
-Em hardware com folga conhecida, aumentar para 50 ou 100 via configuração. Em V1.5+ podemos avaliar implementar adaptive batch sizing baseado em latência média das últimas N gravações.
+
+A janela é parâmetro. Hardware com pouco disco reduz; instalação com exigência regulatória
+mais dura aumenta.
 
 ---
 
-## Buffer nunca deleta (append-only com flag synced)
+## Modelo de leitura estreito, e não uma coluna JSONB
 
 ### A escolha
-Leituras sincronizadas ficam com `synced = 1` permanentemente. Não há `DELETE FROM`.
+
+Uma linha por **campo projetado**, com três colunas de valor: numérico, texto e lógico.
 
 ### O que se prioriza
-Auditoria, diagnóstico forense de quedas passadas, simplicidade do código (sem políticas de limpeza para errar).
+
+Que a série temporal comprima de verdade, que o Grafana consulte sem conhecer a forma interna
+de cada tipo de conteúdo, e que o esquema não possa ganhar tipos por acidente — as três
+colunas são exatamente os três tipos que a interface selada `ValorProjetado` admite.
+
+"Modelagem genérica de eventos temporais" na prática vira uma coluna JSONB onde tudo cabe e
+nada é validado.
 
 ### Do que se abre mão
-- **Crescimento ilimitado do arquivo**: em ambientes com quedas frequentes, o `buffer.db` pode chegar a centenas de MB ou GB ao longo de meses. Sem política de retenção, vai consumir disco.
-- **Performance de queries no buffer**: tabela grande com maioria de registros já sincronizados torna queries `WHERE synced = 0` cada vez mais lentas se SQLite não tiver índice adequado.
+
+- **Linhas por envelope.** Um envelope com seis campos vira seis linhas. O volume de linhas é
+  maior que numa tabela larga.
+- **Consulta de um envelope inteiro.** Reunir todos os campos de um envelope exige agregação
+  ou pivô.
+- **Campos novos exigem migração** se algum dia precisarem de um quarto tipo de valor — o que
+  é deliberado: a interface é selada justamente porque este esquema é contrato publicado.
 
 ### Quando reconsiderar
-Em V1.7+ implementar política de retenção configurável: por tempo (ex: deletar synced=1 mais antigos que 90 dias) ou por tamanho (ex: manter no máximo 100MB de histórico).
+
+Se as consultas dominantes passarem a ser "todos os campos de um envelope" em vez de "um
+campo ao longo do tempo". Hoje é o contrário.
 
 ---
 
-## VacuumChamberSimulator por fases lineares em vez de modelo físico completo
+## Protobuf no fio, em vez de JSON
 
 ### A escolha
-Simulação por interpolação linear entre fases definidas (ocioso, rampa, hold, rampa, ocioso) com ruído gaussiano.
+
+Um `.proto` versionado como fonte única, do qual todas as pontas são geradas.
 
 ### O que se prioriza
-Simplicidade, dados que parecem realistas o suficiente para apresentação técnica, ciclo determinístico fácil de explicar.
+
+Um codec só para todos os transportes; evolução de esquema como ponto forte, com campos
+opcionais permitindo gateway e frota em versões diferentes; e cobertura da ponta mais cara
+de corrigir — o firmware embarcado, onde divergência de contrato se corrige com atualização
+em campo.
 
 ### Do que se abre mão
-- **Fidelidade física**: modelo real envolveria lei de Newton de resfriamento, capacidade térmica do meio, perdas radiativas. Para validação contra dados reais de equipamento, a simulação atual é insuficiente.
-- **Variabilidade de operação**: o ciclo é sempre igual. Equipamento real tem variações de carga, falhas pontuais, ciclos abortados. A simulação não modela nada disso.
-- **Multi-variável**: real seria temperatura, pressão de vácuo, e talvez umidade. Atual simula só temperatura.
 
-### Quando reconsiderar
-Quando o objetivo passar de "apresentar o middleware" para "validar comportamento de coleta contra processo real". Aí vale investir em modelo físico ou usar gravações de operação real como playback.
+- **Legibilidade no `tcpdump`.** O tráfego deixa de ser inspecionável a olho.
+- **Uma ferramenta a mais no build.** `protoc` e `protoc-gen-go` para regerar.
+- **Depuração exige um passo.** Ler uma remessa capturada precisa de decodificação.
+
+### Mitigação, e o que ela custa
+
+O código gerado é **versionado**, então `go build` puro funciona sem `protoc` — importante
+numa planta sem internet. O custo é que o gerado pode ficar desatualizado em relação ao
+`.proto`; por isso `make contrato-conferir` reprova o build nesse caso.
 
 ---
 
-## ThreadLocalRandom em vez de Random com seed injetável
+## Tipo de conteúdo descoberto por reflexão, e não por `switch`
 
 ### A escolha
-`ThreadLocalRandom.current()` no `VacuumChamberSimulator`.
+
+O codec lê o descritor do protobuf para saber qual conteúdo o envelope carrega. O nome do
+campo do `oneof` **é** o identificador do tipo no domínio.
 
 ### O que se prioriza
-Simplicidade, segurança em ambiente multi-thread e ausência de contenção.
+
+Que não exista uma segunda lista de tipos. Um `switch` no codec seria a segunda lista — a
+primeira é `TodasAsDefinicoes` — e duas listas do mesmo conjunto divergem.
 
 ### Do que se abre mão
-- **Reproducibilidade**: `ThreadLocalRandom` não aceita seed fixo, então cada execução tem ruído diferente. Para testes determinísticos, seria melhor injetar um `Random` com seed fixo.
-- **Injeção**: como é acessado estaticamente, não dá para substituir por um gerador controlado em teste sem refatorar a assinatura.
 
-### Quando reconsiderar
-Quando testes automatizados forem implementados (V2.0+), injetar um `Random` via DI para permitir seed fixo em testes.
+- **Verificação em tempo de compilação.** Um `switch` com `exhaustive` reprovaria o build ao
+  acrescentar um tipo; a reflexão descobre em execução.
+- **Custo de execução.** A reflexão custa mais que um `switch`.
+
+### Como o custo é contido
+
+O descritor do `oneof` é resolvido **uma vez**, na inicialização do pacote, e não a cada
+mensagem. E a verificação em tempo de compilação é substituída por
+`TestTodoConteudoDoContratoTemDefinicao`, que confere nos dois sentidos e reprova o build.
 
 ---
 
-## Health check da Api separado do estado do Collector
+## Dois laços independentes no nó
 
 ### A escolha
-A Api verifica apenas conectividade com o banco via `SELECT 1`. Não sabe se o Collector está vivo, em que estado, ou quando foi a última leitura.
+
+Amostragem e despacho em goroutines separadas, comunicando por um buffer com mutex.
 
 ### O que se prioriza
-Simplicidade da Api, isolamento de processos.
+
+Que a amostragem tenha **período fixo garantido por temporizador** e nunca dependa da rede.
+Uma série amostrada em intervalos irregulares não é comparável consigo mesma, e nenhuma
+análise posterior a conserta.
 
 ### Do que se abre mão
-- **Observabilidade ponta a ponta**: monitoring externo que consulta `/health` recebe `healthy` mesmo se o Collector morreu e nenhuma leitura nova está entrando.
-- **Decisão informada**: orquestradores como Kubernetes não conseguem reiniciar o Collector com base no `/health` da Api.
 
-### Quando reconsiderar
-V1.5+ com Prometheus: Collector expõe métricas (last_reading_timestamp, current_state). Api ou Prometheus consultam essas métricas. Health check verdadeiramente ponta a ponta.
+- **Simplicidade.** Um `select` único seria mais fácil de ler.
+- **Sincronização.** O buffer precisa de mutex.
+
+### Por que não há escolha aqui
+
+A primeira versão era um `select` único, e custou 15 segundos sem nenhuma medição durante uma
+queda de 12 segundos do gateway. O recuo do despacho dorme, e dormindo bloqueava o
+temporizador. Dado que nunca foi medido não está em buffer nenhum.
 
 ---
 
-## Sem load test formal antes de produção
+## Capacidade do buffer do nó em itens, e não em bytes
 
 ### A escolha
-A V1.2 não passou por load test estruturado. Capacidade estimada conservadoramente em 3 a 5 dispositivos simultâneos com 1 leitura/segundo cada.
+
+`CapacidadeDoBuffer` conta itens.
 
 ### O que se prioriza
-Velocidade de entrega do MVP, foco em funcionalidade e correção antes de otimização prematura.
+
+Simplicidade e previsibilidade. Numa origem embarcada, o limite que importa é o número de
+estruturas alocadas estaticamente. Um limite em bytes exigiria medir cada serialização antes
+de decidir se cabe, pagando esse custo em todo item que caberia sem problema.
 
 ### Do que se abre mão
-- **Garantia de capacidade**: não sabemos onde está o gargalo real. Pode ser o SQLite com lock de banco, o TimescaleDB com inserts sequenciais, ou o ciclo do Worker bloqueando.
-- **Justificativa para venda em produção**: cliente real perguntar "quantos dispositivos suporta" não tem resposta defensável atualmente.
 
-### Quando reconsiderar
-Antes de qualquer instalação em produção real. Plano: usar k6 ou Artillery para simular múltiplas instâncias de Collector escrevendo simultaneamente, medir CPU, memória, latência de gravação, e identificar gargalo concreto.
+- **Previsibilidade de memória.** Itens de tamanhos muito diferentes fazem o consumo real
+  variar. Um descritor de origem é bem maior que uma amostra escalar.
+
+### Mitigação
+
+`BytesEstimados` é reportado na telemetria de saúde, então a ocupação real é observável — e
+alarmável **antes** de saturar.
 
 ---
 
-## Serialização ISO-8601 e BigDecimal-string no buffer
+## Identificadores em português
 
 ### A escolha
-No buffer SQLite, `timestamp` é gravado em ISO 8601 e `value` como string de `BigDecimal`, em vez de depender de tipos nativos do SQLite ou da formatação default do locale.
+
+Pastas, pacotes, tipos, funções e variáveis em português sem acento.
 
 ### O que se prioriza
-Robustez cross-locale e precisão exata. O sistema funciona corretamente em máquinas com `pt-BR`, `en-US`, ou qualquer outro locale sem mudança de código, e sem perder dígitos decimais.
+
+Linguagem ubíqua aplicada de fato. O vocabulário do domínio já é português em toda a
+documentação — "ponto de medição", "sessão de boot", "parada de máquina". Com identificadores
+em inglês, todo leitor faria tradução mental constante entre o que os documentos dizem e o
+que o código diz.
 
 ### Do que se abre mão
-- **Overhead de parse/format**: cada gravação e leitura do buffer converte string ↔ tipo, em vez de usar binário nativo.
-- **Risco de esquecer**: novos pontos de serialização que usarem `String.format` com locale ou tipos de ponto flutuante reintroduzem o risco. Padrão de equipe e revisão de código mitigam isso.
+
+- **Convenção do ecossistema.** Go escreve em inglês, e quem chega de fora estranha.
+- **Ferramentas que assumem inglês.** `misspell` teve de sair da esteira por produzir dezenas
+  de falsos positivos.
+- **Mistura inevitável.** Trechos ficam bilíngues, porque três categorias permanecem em
+  inglês: o que a linguagem impõe (`main`, `Error`, `String`), o que o compilador reconhece
+  (`internal/` **não é escolha** — o Go impõe que pacotes ali não sejam importáveis de fora)
+  e o que sai do processo (rótulo de métrica e coluna de banco, consumidos por Prometheus,
+  Grafana e SQL).
 
 ### Quando reconsiderar
-Nunca para o timestamp e o decimal. Esta é a forma correta. A alternativa de confiar no locale default é frágil e quebra em produção.
+
+Se o projeto passar a receber contribuição de fora do domínio de língua portuguesa. Aí o
+custo do estranhamento passaria a valer mais que o ganho da linguagem ubíqua.
 
 ---
 
-## Spring JdbcClient em vez de JPA/Hibernate
+## Sem framework HTTP
 
 ### A escolha
-Acesso a dados com `JdbcClient` e SQL explícito, em vez de um ORM completo (JPA/Hibernate).
+
+`net/http` da biblioteca padrão, com o roteamento por padrão de método e caminho do Go 1.22+.
 
 ### O que se prioriza
-Controle total sobre o SQL, previsibilidade de performance, ausência de mapeamento mágico, e proximidade com o modelo de séries temporais do TimescaleDB (hypertables, funções específicas).
+
+Zero dependência no caminho mais exposto do sistema, e nenhuma camada entre o handler e o que
+de fato acontece na conexão.
 
 ### Do que se abre mão
-- **Produtividade em CRUD genérico**: um ORM geraria queries de CRUD automaticamente. Aqui cada query é escrita à mão.
-- **Portabilidade entre bancos**: SQL explícito acopla mais à dialeto do banco. Para um middleware que mira TimescaleDB especificamente, é aceitável.
-- **Cache de primeiro/segundo nível**: recursos que o Hibernate oferece de fábrica precisariam ser implementados manualmente se necessário.
 
-### Quando reconsiderar
-Se o domínio de persistência crescer para muitas entidades relacionais com CRUD repetitivo. Para o escopo atual (uma tabela de leituras append-heavy), o ORM seria peso morto.
+- **Middlewares prontos.** Registro de acesso, métricas e autenticação precisam ser escritos.
+- **Roteamento avançado.** Grupos, parâmetros tipados e afins não existem.
+
+### Por que o custo é baixo aqui
+
+São **quatro rotas**, todas simples, e duas delas em servidores diferentes por decisão de
+topologia. Um framework aqui traria mais superfície do que economia.
 
 ---
 
-## Eclipse Milo para OPC UA
+## Sem TLS ainda no ingresso
 
-### A escolha
-`OpcUaProtocolReader` usa a stack Eclipse Milo para falar OPC UA.
+### A escolha, e é uma dívida declarada
+
+O ingresso fala HTTP puro hoje.
 
 ### O que se prioriza
-Milo é a implementação OPC UA de referência no ecossistema Java, ativa e madura, cobrindo cliente e servidor com suporte a segurança (SignAndEncrypt) para evolução futura.
+
+Fechar primeiro o caminho de dado, que é o que decide se o sistema serve para alguma coisa.
 
 ### Do que se abre mão
-- **Peso de dependências**: Milo traz transitivamente Netty e bibliotecas de criptografia, aumentando o tamanho do artefato.
-- **Curva de aprendizado**: a API expõe conceitos de OPC UA (NodeId, DataValue, StatusCode, sessões) que exigem familiaridade com o protocolo.
 
-### Quando reconsiderar
-Apenas se um protocolo industrial diferente (Modbus, MQTT) substituir o OPC UA como principal. Enquanto OPC UA for o alvo, Milo é a escolha consolidada.
+Tudo o que mTLS entregaria: identidade por dispositivo, confidencialidade e a conferência
+entre identidade **reivindicada** e **autenticada** — sem a qual uma origem legítima pode
+enviar dados se passando por outra.
+
+### O que já está preparado
+
+O contrato carrega a identidade reivindicada, e o codec **deliberadamente não a confere** —
+essa decisão pertence ao adaptador de ingresso, que é quem terá acesso à credencial. A peça
+que falta é o adaptador, não o desenho.
+
+### Quando pagar
+
+Antes de qualquer instalação fora de um ambiente controlado. Está registrado como V2.1.
 
 ---
 
-## Cobertura de testes (unitários, integração e camada web)
+## Capacidade ainda não validada sob carga
 
 ### A escolha
-Três camadas de teste, separando os rápidos dos que sobem infraestrutura:
-- **Unitários** (`*Test`, Surefire): decorator de resiliência (fallback, re-lançamento quando ambos os destinos falham com a causa preservada, sincronização do buffer, item corrompido, parada no primeiro erro), parsing do buffer (round-trip exato, valores e timestamps malformados, independência de locale), pipeline de resiliência (sucesso, esgotamento de retries, recuperação, timeout), simulador e estado do Worker.
-- **Integração** (`*IT`, Failsafe): gravação e consulta reais contra um **TimescaleDB em container (Testcontainers)** e contra um **arquivo SQLite real**, exercitando a DDL, o SQL e o mapeamento de tipos.
-- **Camada web** (`@WebMvcTest` + MockMvc): `/readings` e `/health` (200 e 503).
 
-Os tempos da pipeline de resiliência são injetáveis (`Tuning`) para permitir testes rápidos sem alterar o comportamento de produção.
-
-### O que se prioriza
-Proteger o comportamento crítico (zero perda de dados, resiliência, contrato HTTP) contra regressão. Os unitários são rápidos e determinísticos; os de integração (`*IT`) só rodam em `verify` e são pulados automaticamente onde não há Docker.
+A reescrita priorizou corretude e o fechamento do caminho de dado.
 
 ### Do que se abre mão
-- **Load test**: capacidade sob carga continua não validada (ver seção própria).
-- **Cobertura de mutação**: ainda não há análise de mutação (ex.: PIT) para medir a qualidade dos testes além da cobertura de linha.
 
-### Quando reconsiderar
-Antes da V2.0: o load test formal e, opcionalmente, testes de mutação para endurecer ainda mais a suíte.
+- **Saber onde está o gargalo real.** A hipótese é o `fsync` do diário, e ela não foi medida.
+- **Resposta defensável a "quantos dispositivos suporta".**
+
+### O que já se sabe
+
+O teste de ponta a ponta rodou um nó a 2 Hz com quatro canais atravessando uma queda de 14
+segundos do gateway, sem perda, sem duplicata e sem lacuna de amostragem. Isso valida o
+**comportamento**, não a **capacidade**.
+
+### Quando pagar
+
+Antes de qualquer instalação em produção. Herdado como pendência da V1.x, e continua
+pendente — dito aqui em vez de omitido.

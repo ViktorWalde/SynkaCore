@@ -1,0 +1,122 @@
+# Portoes de analise estatica do SynkaCore.
+#
+# O invariante de nao-duplicacao nao se sustenta em documentacao: revisor cansado
+# aprova funcao repetida, e a repeticao so aparece quando as duas copias ja
+# divergiram. Cada linter abaixo e uma trava real.
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    # --- nao-duplicacao, o invariante central do projeto ---
+
+    # dupl acha blocos parecidos: a duplicacao literal.
+    - dupl
+    # goconst acha literal repetido — primeiro sintoma de uma regra prestes a ser
+    # reescrita em dois lugares e ficar diferente nos dois.
+    - goconst
+
+    # --- funcao que incha e funcao que vai ser copiada ---
+    - gocognit
+    - nestif
+
+    # --- exaustividade ---
+
+    # exhaustive e a trava mais importante da lista. As politicas de ClasseDeDado,
+    # o mapeador de status HTTP e a conversao de EstadoDeMaquina sao switches SEM
+    # clausula default, de proposito: acrescentar um membro ao enum precisa
+    # REPROVAR o build em todo ponto que exige uma decisao.
+    #
+    # Uma versao anterior deste desenho usava default e documentava isso como se
+    # fosse uma trava. Nao era: o caso novo caia no default em silencio, e a classe
+    # mais critica do sistema entraria pela porta que o proprio autor deixou aberta.
+    - exhaustive
+
+    # --- corretude ---
+    - errorlint
+    - bodyclose
+    - nilerr
+    - sqlclosecheck
+    - makezero
+    - copyloopvar
+
+    # --- seguranca ---
+    - gosec
+
+    # --- higiene ---
+    #
+    # misspell fica DE FORA: ele e um corretor de ingles, e a documentacao deste
+    # projeto e em portugues. Ligado, ele acusava "eles" como erro de "eels" e
+    # "processos" como erro de "processors" — dezenas de falsos positivos que
+    # treinariam qualquer leitor a ignorar a saida do linter inteiro. Um portao que
+    # produz ruido e um portao que sera desligado.
+    - unconvert
+    - wastedassign
+    - prealloc
+
+linters-settings:
+  exhaustive:
+    # A chave da configuracao: um `default` NAO conta como cobertura.
+    #
+    # Com o padrao (true), qualquer switch com default passaria — e o linter
+    # deixaria de verificar exatamente o que ele existe para verificar.
+    default-signifies-exhaustive: false
+
+  dupl:
+    threshold: 120
+
+  gocognit:
+    min-complexity: 25
+
+  goconst:
+    min-len: 3
+    min-occurrences: 4
+
+  gosec:
+    excludes:
+      # G115 (conversao entre larguras de inteiro) e verificado a mao onde importa:
+      # o envelope valida tempo ligado NA LARGURA EM QUE O DADO CHEGOU, antes de
+      # qualquer conversao, e ha teste cobrindo o caso hostil. As demais conversoes
+      # sao de valores ja limitados por validacao anterior.
+      - G115
+
+issues:
+  exclude-rules:
+    # Testes duplicam estrutura por natureza — tabelas de caso, montagem de
+    # cenario. Cobrar dupl e goconst ali produziria abstracao de teste, que e pior
+    # que a repeticao: um teste indireto esconde o que ele afirma.
+    - path: _test\.go
+      linters:
+        - dupl
+        - goconst
+        - gosec
+
+    # Os tipos de conteudo do dominio sao PARALELOS de proposito, e o paralelismo
+    # e o que resta depois de a duplicacao real ter sido extraida.
+    #
+    # O esqueleto que de fato se repetia — alocar a mensagem do contrato,
+    # decodificar, envolver o erro — foi para definirConteudo, em decodificacao.go.
+    # O que sobra em cada arquivo e um identificador de tipo, uma estrutura de dois
+    # ou tres campos e a conversao daquele conteudo especifico.
+    #
+    # Unificar isso exigiria um tipo generico de conteudo, e ele apagaria
+    # exatamente o que o sistema precisa distinguir: amostra escalar e leitura de
+    # contador tem a MESMA forma e requisitos OPOSTOS — a primeira tolera perda, a
+    # segunda nao. E dessa distincao que saem as cinco politicas de ClasseDeDado.
+    #
+    # A garantia contra divergencia aqui nao vem do dupl, e sim de uma trava mais
+    # forte: TestTodoConteudoDoContratoTemDefinicao le o descritor do protobuf por
+    # reflexao e reprova o build se algum conteudo do contrato ficar sem definicao,
+    # ou se alguma definicao nao corresponder a campo nenhum.
+    - path: internal/dominio/aquisicao/conteudo.*\.go
+      linters:
+        - dupl
+
+    # O codigo gerado a partir do contrato nao e escrito por ninguem.
+    - path: internal/contrato/
+      linters:
+        - dupl
+        - goconst
+        - gosec
+        - prealloc
