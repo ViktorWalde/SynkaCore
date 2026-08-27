@@ -54,6 +54,27 @@ type LinhaProjetada struct {
 	ValorNumerico *float64
 	ValorTexto    *string
 	ValorLogico   *bool
+
+	// O que a configuracao da instalacao DERIVA sobre este canal.
+	//
+	// Todos anulaveis: canal que chega sem configuracao continua sendo gravado, com
+	// estes campos nulos, em vez de recusado. Nulo significa "o gateway ainda nao
+	// sabe o que isto mede", que e informacao honesta — e recusar significaria
+	// perder dado durante o comissionamento, que e exatamente quando canal nao
+	// configurado acontece.
+	IDDoPontoDeMedicao *string
+	Grandeza           *string
+	Unidade            *string
+
+	// ForaDeFaixa distingue tres estados, e a distincao importa: nulo e "sem faixa
+	// configurada", falso e "dentro da faixa", verdadeiro e "fora". Colapsar nulo e
+	// falso faria uma instalacao ainda nao configurada parecer inteiramente saudavel.
+	ForaDeFaixa *bool
+
+	// RotuloDoMotivo e o motivo de parada resolvido pelo catalogo da instalacao.
+	// O codigo bruto permanece no campo reason_code: o derivado nunca sobrescreve
+	// o afirmado.
+	RotuloDoMotivo *string
 }
 
 // Projetor grava o modelo de leitura.
@@ -108,13 +129,16 @@ func (p *Projetor) Projetar(ctx context.Context, linhas []LinhaProjetada) error 
 				instante_observado, instante_estimado, tempo_ligado_ms,
 				id_do_dispositivo, id_da_sessao_de_boot, numero_de_sequencia,
 				tipo_de_conteudo, classe_de_dado,
-				nome_do_campo, valor_numerico, valor_texto, valor_logico
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+				nome_do_campo, valor_numerico, valor_texto, valor_logico,
+				id_do_ponto_de_medicao, grandeza, unidade, fora_de_faixa, rotulo_do_motivo
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 			ON CONFLICT ON CONSTRAINT leitura_unica DO NOTHING`,
 			linha.InstanteObservado, linha.InstanteEstimado, linha.TempoLigadoMs,
 			linha.IDDoDispositivo, linha.IDDaSessaoDeBoot, linha.NumeroDeSequencia,
 			linha.TipoDeConteudo, linha.ClasseDeDado,
-			linha.NomeDoCampo, linha.ValorNumerico, linha.ValorTexto, linha.ValorLogico)
+			linha.NomeDoCampo, linha.ValorNumerico, linha.ValorTexto, linha.ValorLogico,
+			linha.IDDoPontoDeMedicao, linha.Grandeza, linha.Unidade,
+			linha.ForaDeFaixa, linha.RotuloDoMotivo)
 	}
 
 	resultados := transacao.SendBatch(ctx, lote)
@@ -154,6 +178,25 @@ func (p *Projetor) Verificar(ctx context.Context) error {
 	if !existe {
 		return falha.Nova(falha.CategoriaIndisponivel, operacaoVerificar,
 			"o banco de consulta responde mas o modelo de leitura nao esta aplicado: rode as migracoes")
+	}
+
+	// A conferencia vai ate a coluna mais recente, e nao para na existencia da
+	// tabela. Um banco criado antes da migracao 0002 tem `leitura` e nao tem
+	// `id_do_ponto_de_medicao` — a verificacao passaria e TODA gravacao falharia
+	// depois, em operacao, com erro de coluna inexistente. Descobrir isso na
+	// partida custa uma mensagem; descobrir em operacao custa uma investigacao.
+	var temColuna bool
+	err = p.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			 WHERE table_name = 'leitura' AND column_name = 'id_do_ponto_de_medicao')`).Scan(&temColuna)
+	if err != nil {
+		return falha.Envolver(falha.CategoriaIndisponivel, operacaoVerificar,
+			"o banco de consulta nao respondeu", err)
+	}
+	if !temColuna {
+		return falha.Nova(falha.CategoriaIndisponivel, operacaoVerificar,
+			"o modelo de leitura esta desatualizado: falta a migracao 0002. Aplique migracoes/ na ordem")
 	}
 	return nil
 }

@@ -1,0 +1,113 @@
+# Configuracao da instalacao — SynkaCore
+#
+# Este arquivo responde a pergunta que a origem do dado NAO sabe responder: o que
+# significa o numero que ela envia.
+#
+# A origem reporta "canal 0 = 24,7". Ela nao sabe se isso e temperatura ou pressao,
+# em que unidade, nem de qual equipamento. Ela e burra de proposito — assim trocar
+# um sensor queimado nao exige reprogramar firmware, e a serie historica pertence
+# ao PONTO DE MEDICAO, nao a peca de hardware.
+#
+# ESTE ARQUIVO E AUTORITATIVO. A origem tambem envia um descritor dizendo o que ela
+# ACREDITA medir; ele serve para o gateway detectar discordancia — canal trocado no
+# painel — e nunca para sobrescrever o que esta aqui.
+#
+# Copie para instalacao.yaml e ajuste. O gateway o carrega com:
+#
+#     ./bin/synkacore-gateway -instalacao configuracao/instalacao.yaml
+#
+# A validacao acontece na PARTIDA: erro de digitacao derruba o processo com
+# mensagem clara, em vez de virar dado errado em silencio meses depois. Campo
+# desconhecido tambem derruba — `unidad:` em vez de `unidade:` seria, num
+# decodificador tolerante, um ponto sem unidade e uma serie em escala indefinida.
+
+# Identifica esta planta. Necessario porque o produto e replicado em varias
+# instalacoes e uma delas pode ter mais de um gateway: sem isso nao ha como
+# consolidar nem distinguir origem depois.
+instalacao: planta-piloto
+
+# ---------------------------------------------------------------------------
+# MOTIVOS DE PARADA
+# ---------------------------------------------------------------------------
+#
+# Codigo inteiro, e nao texto livre. Texto livre produz "quebra", "Quebra" e
+# "quebrou" como motivos distintos, e o relatorio agrupa errado sem ninguem
+# perceber — porque cada um deles parece correto isoladamente.
+#
+# O codigo ZERO e reservado e nao aparece aqui: ele significa "parada ainda nao
+# classificada", que e informacao legitima. O operador pode nao ter classificado, e
+# forcar uma classificacao errada e pior que admitir a falta.
+motivos_de_parada:
+  # A versao permite ao gateway detectar deriva de vocabulario. Se a interface da
+  # origem exibe rotulos de uma versao antiga, os codigos que ela envia podem
+  # significar OUTRA COISA — e o dado fica errado de forma indetectavel, porque o
+  # codigo continua sendo um inteiro perfeitamente valido.
+  #
+  # Incremente sempre que mudar o significado de um codigo. Acrescentar codigo novo
+  # nao exige incrementar.
+  versao: 1
+
+  codigos:
+    10: "Falta de materia-prima"
+    11: "Falta de operador"
+    20: "Troca de ferramenta"
+    21: "Ajuste de processo"
+    30: "Manutencao preventiva"
+    40: "Falha eletrica"
+    41: "Falha mecanica"
+    42: "Falha hidraulica"
+
+# ---------------------------------------------------------------------------
+# PONTOS DE MEDICAO
+# ---------------------------------------------------------------------------
+#
+# Cada entrada liga um CANAL FISICO de um dispositivo a um PONTO DE MEDICAO logico.
+#
+# O identificador do ponto aceita hierarquia com ponto, refletindo a estrutura da
+# planta. Use-a: "linha-2.prensa-01.temperatura-mancal" permite consultar uma linha
+# inteira depois, e "temp1" nao permite nada.
+pontos_de_medicao:
+  - dispositivo: camara-de-vacuo-01
+    modulo: 0            # placa de expansao; zero e a propria origem
+    canal: 0
+    ponto: curtimento.camara-01.temperatura
+    grandeza: temperatura
+    unidade: Cel         # notacao UCUM: Cel, kPa, L/min, kg, %
+    # Faixa plausivel do INSTRUMENTO, nao do processo.
+    #
+    # Leitura fora dela e MARCADA, nunca recusada: a origem mediu aquilo, e
+    # descartar apagaria justamente o sintoma de um transdutor descalibrado ou de
+    # um cabo rompido. O valor entra no modelo de leitura com a anomalia ao lado.
+    faixa_minima: -20.0
+    faixa_maxima: 200.0
+
+  - dispositivo: camara-de-vacuo-01
+    modulo: 0
+    canal: 1
+    ponto: curtimento.camara-01.pressao
+    grandeza: pressao
+    unidade: kPa
+    faixa_minima: 0.0
+    faixa_maxima: 120.0
+
+  - dispositivo: camara-de-vacuo-01
+    modulo: 0
+    canal: 2
+    ponto: curtimento.camara-01.estado
+    grandeza: estado_digital
+    unidade: "1"         # adimensional em UCUM; entre aspas para nao virar numero
+
+  - dispositivo: camara-de-vacuo-01
+    modulo: 0
+    canal: 3
+    ponto: curtimento.camara-01.pecas-produzidas
+    grandeza: contagem_de_pecas
+    unidade: "1"
+
+# Grandezas aceitas vem do contrato de fio e sao listadas pelo proprio gateway:
+#
+#     curl http://127.0.0.1:8080/contrato
+#
+# Elas nao sao escritas a mao em lugar nenhum do codigo — sao derivadas do enum do
+# .proto por reflexao. Acrescentar uma grandeza ao contrato a torna utilizavel aqui
+# automaticamente, sem ninguem precisar lembrar de atualizar uma segunda lista.

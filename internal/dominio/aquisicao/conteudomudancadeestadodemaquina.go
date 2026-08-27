@@ -51,6 +51,9 @@ type MudancaDeEstadoDeMaquina struct {
 	IDDoLoteAfirmado string
 }
 
+// EnderecoDoCanal implementa ConteudoEnderecado.
+func (m MudancaDeEstadoDeMaquina) EnderecoDoCanal() EnderecoDeCanal { return m.Endereco }
+
 // Tipo implementa ConteudoDecodificado.
 func (m MudancaDeEstadoDeMaquina) Tipo() TipoDeConteudo { return TipoMudancaDeEstadoDeMaquina }
 

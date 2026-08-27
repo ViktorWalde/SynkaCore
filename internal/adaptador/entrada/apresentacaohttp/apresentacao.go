@@ -30,6 +30,7 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/adaptador/saida/diariosqlite"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/estadooperacional"
+	"github.com/ViktorWalde/SynkaCore/internal/dominio/instalacao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
 )
 
@@ -42,6 +43,14 @@ const (
 
 	// CaminhoDoContrato lista os tipos de conteudo que este gateway reconhece.
 	CaminhoDoContrato = "/contrato"
+
+	// CaminhoDeComissionamento relata desacordos entre o que as origens declaram e
+	// o que a instalacao configura.
+	//
+	// Existe para o tecnico em campo: ele confere o relatorio, mexe na fiacao,
+	// confere de novo. Sem endpoint, essa conferencia exigiria ler log do gateway
+	// — que ele nao tem acesso, e que nao esta organizado para isso.
+	CaminhoDeComissionamento = "/comissionamento"
 
 	// leiturasPorPaginaPadrao herda o comportamento do endpoint equivalente da V1.x.
 	leiturasPorPaginaPadrao = 100
@@ -65,6 +74,21 @@ type Apresentacao struct {
 	// investigacao, a segunda e a configuracao pedida —, e reporta-las com a mesma
 	// palavra faria o monitoramento alarmar sobre uma escolha deliberada.
 	projecaoLigada bool
+
+	// configuracao e a instalacao, ou nil quando nenhuma foi carregada.
+	configuracao *instalacao.Instalacao
+
+	// declaracoes guarda o ultimo descritor recebido de cada dispositivo.
+	//
+	// Em memoria, e nao no diario, de proposito: e um instantaneo do que as origens
+	// estao dizendo AGORA, e nao um fato historico. O descritor bruto continua no
+	// diario e permite reconstruir isto a qualquer momento; guardar de novo em
+	// disco seria uma segunda copia do mesmo dado, que divergiria.
+	//
+	// A consequencia aceita: apos reinicio do gateway, o relatorio fica vazio ate
+	// cada origem reenviar seu descritor. Isso e dito na propria resposta, em vez
+	// de deixar um relatorio vazio parecer "nenhuma divergencia".
+	declaracoes *registroDeDeclaracoes
 }
 
 // ComProjecaoLigada declara que este gateway projeta para um banco de consulta.
@@ -78,7 +102,14 @@ func NovaApresentacao(diario *diariosqlite.Diario, catalogo *aquisicao.CatalogoD
 	rastreador *estadooperacional.Rastreador, r relogio.Relogio, registro *slog.Logger) *Apresentacao {
 	return &Apresentacao{
 		diario: diario, catalogo: catalogo, rastreador: rastreador, relogio: r, registro: registro,
+		declaracoes: novoRegistroDeDeclaracoes(),
 	}
+}
+
+// ComInstalacao liga o relatorio de comissionamento.
+func (a *Apresentacao) ComInstalacao(configuracao *instalacao.Instalacao) *Apresentacao {
+	a.configuracao = configuracao
+	return a
 }
 
 // Rotas devolve o multiplexador do lado de escritorio.
@@ -91,6 +122,7 @@ func (a *Apresentacao) Rotas() *http.ServeMux {
 	rotas.HandleFunc("GET "+CaminhoDeSaude, a.responderSaude)
 	rotas.HandleFunc("GET "+CaminhoDeLeituras, a.responderLeituras)
 	rotas.HandleFunc("GET "+CaminhoDoContrato, a.responderContrato)
+	rotas.HandleFunc("GET "+CaminhoDeComissionamento, a.responderComissionamento)
 	return rotas
 }
 

@@ -133,7 +133,8 @@ gateway: compilar
 .PHONY: gateway-completo
 gateway-completo: compilar
 	./$(BINARIOS)/synkacore-gateway \
-		-banco 'postgres://synkacore:synkacore@127.0.0.1:5432/synkacore'
+		-banco 'postgres://synkacore:synkacore@127.0.0.1:5432/synkacore' \
+		-instalacao configuracao/instalacao.exemplo.yaml
 
 .PHONY: no
 no: compilar

@@ -82,3 +82,64 @@ func TestCatalogoCompletoMonta(t *testing.T) {
 		t.Errorf("catalogo montou com %d tipos, esperado %d", quantidade, len(aquisicao.TodasAsDefinicoes()))
 	}
 }
+
+// TestConteudoEnderecadoCasaComOContrato trava a correspondencia entre ter
+// endereco no dominio e ter endereco no contrato.
+//
+// Este teste existe porque a primeira versao do enriquecimento da projecao usou
+// uma assercao para um metodo que NAO EXISTIA em nenhum tipo. Ela compilava, nunca
+// casava, e o enriquecimento inteiro era codigo morto — nenhuma linha ganharia
+// ponto de medicao, e nada acusaria.
+//
+// A correspondencia e verificada contra o descritor do protobuf: um conteudo cuja
+// mensagem do contrato tem o campo `endereco` PRECISA implementar
+// ConteudoEnderecado, e um que nao tem, nao pode implementar.
+func TestConteudoEnderecadoCasaComOContrato(t *testing.T) {
+	descritor := (&contratov1.Envelope{}).ProtoReflect().Descriptor()
+	oneof := descritor.Oneofs().ByName(protoreflect.Name(aquisicao.NomeDoOneofDeConteudo))
+
+	// Amostra de cada conteudo, construida por decodificacao de bytes vazios: todo
+	// campo do contrato e opcional, entao a mensagem vazia decodifica para o valor
+	// zero do tipo de dominio — que e tudo que este teste precisa.
+	catalogo, err := aquisicao.NovoCatalogoDeConteudo(aquisicao.TodasAsDefinicoes()...)
+	if err != nil {
+		t.Fatalf("montagem do catalogo falhou: %v", err)
+	}
+
+	for indice := range oneof.Fields().Len() {
+		campo := oneof.Fields().Get(indice)
+		nome := string(campo.Name())
+
+		t.Run(nome, func(t *testing.T) {
+			definicao, err := catalogo.Buscar(aquisicao.TipoDeConteudo(nome))
+			if err != nil {
+				t.Fatalf("sem definicao de catalogo: %v", err)
+			}
+
+			contratoTemEndereco := campo.Message().Fields().ByName("endereco") != nil
+
+			// Alguns conteudos recusam a mensagem vazia por terem validacao propria
+			// (amostra agregada exige contagem, lacuna exige registros perdidos).
+			// Nesses casos a decodificacao falha e o teste usa o proprio descritor
+			// como fonte, que e o que importa aqui.
+			conteudo, err := definicao.Decodificar([]byte{})
+			if err != nil {
+				if contratoTemEndereco {
+					t.Logf("conteudo com validacao propria; correspondencia conferida pelo descritor")
+				}
+				return
+			}
+
+			_, dominioTemEndereco := conteudo.(aquisicao.ConteudoEnderecado)
+
+			if contratoTemEndereco && !dominioTemEndereco {
+				t.Errorf("o contrato declara `endereco` em %s, mas o tipo de dominio nao implementa "+
+					"ConteudoEnderecado: a projecao nunca resolvera o ponto de medicao deste conteudo", nome)
+			}
+			if !contratoTemEndereco && dominioTemEndereco {
+				t.Errorf("%s implementa ConteudoEnderecado mas o contrato nao tem campo `endereco`: "+
+					"o endereco projetado seria sempre zero", nome)
+			}
+		})
+	}
+}

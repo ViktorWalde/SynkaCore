@@ -27,6 +27,9 @@ type AmostraEscalar struct {
 	Valor float32
 }
 
+// EnderecoDoCanal implementa ConteudoEnderecado.
+func (a AmostraEscalar) EnderecoDoCanal() EnderecoDeCanal { return a.Endereco }
+
 // Tipo implementa ConteudoDecodificado.
 func (a AmostraEscalar) Tipo() TipoDeConteudo { return TipoAmostraEscalar }
 

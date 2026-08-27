@@ -17,6 +17,9 @@ type TransicaoDigital struct {
 	Ativo    bool
 }
 
+// EnderecoDoCanal implementa ConteudoEnderecado.
+func (t TransicaoDigital) EnderecoDoCanal() EnderecoDeCanal { return t.Endereco }
+
 // Tipo implementa ConteudoDecodificado.
 func (t TransicaoDigital) Tipo() TipoDeConteudo { return TipoTransicaoDigital }
 

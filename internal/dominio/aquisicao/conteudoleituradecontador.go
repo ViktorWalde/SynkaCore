@@ -23,6 +23,9 @@ type LeituraDeContador struct {
 	ContagemAcumulada uint64
 }
 
+// EnderecoDoCanal implementa ConteudoEnderecado.
+func (l LeituraDeContador) EnderecoDoCanal() EnderecoDeCanal { return l.Endereco }
+
 // Tipo implementa ConteudoDecodificado.
 func (l LeituraDeContador) Tipo() TipoDeConteudo { return TipoLeituraDeContador }
 

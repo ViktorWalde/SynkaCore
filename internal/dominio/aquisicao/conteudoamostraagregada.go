@@ -47,6 +47,9 @@ type AmostraAgregada struct {
 	ValorEficaz float32
 }
 
+// EnderecoDoCanal implementa ConteudoEnderecado.
+func (a AmostraAgregada) EnderecoDoCanal() EnderecoDeCanal { return a.Endereco }
+
 // Tipo implementa ConteudoDecodificado.
 func (a AmostraAgregada) Tipo() TipoDeConteudo { return TipoAmostraAgregada }
 

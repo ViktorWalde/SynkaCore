@@ -105,6 +105,18 @@ curl http://127.0.0.1:8080/saude
 curl 'http://127.0.0.1:8080/leituras?limite=10'
 ```
 
+### Com significado: qual equipamento, que grandeza, em que unidade
+
+Sem configuração da instalação, o gateway grava `canal 0 = 24,7` — verdade que não
+responde nada. Com ela, cada leitura carrega o ponto de medição, a grandeza e a
+unidade, e o `/comissionamento` denuncia canal trocado no painel.
+
+```bash
+cp configuracao/instalacao.exemplo.yaml configuracao/instalacao.yaml
+./bin/synkacore-gateway -instalacao configuracao/instalacao.yaml
+curl http://127.0.0.1:8080/comissionamento
+```
+
 ### Com o modelo de leitura e os dashboards
 
 ```bash
@@ -140,6 +152,7 @@ Dois servidores, em interfaces separadas, porque o gateway fica entre duas redes
 | `GET /saude` | Estado do diário e da projeção, verificados de verdade |
 | `GET /leituras?limite=N` | Registros recentes do diário, já decodificados |
 | `GET /contrato` | Tipos de conteúdo que este gateway reconhece |
+| `GET /comissionamento` | Desacordos entre o que as origens declaram e o que a instalação configura |
 
 O `/saude` reporta os dois estágios **separados**, e a distinção decide se alguém é
 acordado:
@@ -197,6 +210,7 @@ Documentar "não duplique" não sustenta nada. Cada item abaixo é uma trava rea
 | Invariante | Trava |
 |---|---|
 | **Um ponto de validação por conceito** | `NovoEnvelope` é o único construtor de mensagem. Campos não exportados ⇒ possuir um `Envelope` é prova de que ele é válido. Não existe "validar de novo por segurança". |
+| **Interface nomeada em vez de asserção anônima** | `TestConteudoEnderecadoCasaComOContrato` lê o descritor e exige que conteúdo com campo `endereco` implemente `ConteudoEnderecado`, e vice-versa. Nasceu de um defeito real: uma asserção para interface anônima que nunca casava, deixando o enriquecimento inteiro como código morto. |
 | **Um catálogo que recusa duplicata na inicialização** | `NovoCatalogoDeConteudo` rejeita tipo repetido. Dois arquivos definindo o mesmo tipo derrubam o gateway **no boot**, não em produção. |
 | **O catálogo cobre o contrato** | `TestTodoConteudoDoContratoTemDefinicao` lê o descritor do protobuf por reflexão. Acrescentar uma mensagem ao contrato sem ensinar o gateway a interpretá-la reprova o build. |
 | **Exaustividade sobre enum** | Os `switch` sobre `ClasseDeDado`, `EstadoDeMaquina` e `falha.Categoria` **não têm `default`**, e o linter roda com `default-signifies-exhaustive: false`. |
@@ -279,6 +293,8 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 
 - **[V2.0](docs/V2.0.md)** — a reescrita: por que foi antecipada, o que mudou, o que foi
   encontrado no caminho.
+- **[V2.2](docs/V2.2.md)** — configuração da instalação: como o dado ganha significado, e a
+  rede de proteção que denuncia canal trocado no painel.
 - **[Visão geral visual](docs/VISAO-GERAL.md)** — diagramas de fluxo e cenários de queda.
 - **[Trade-offs](docs/TRADE-OFFS.md)** — decisões técnicas e seus custos.
 - **[Qualidade](docs/QUALIDADE.md)** — os portões do build.
@@ -298,6 +314,6 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 | V1.2 | ✅ Concluída | Buffer local SQLite; auditoria estrutural |
 | V1.3–V1.5 | ❌ Canceladas | Exigiam hardware físico — ver [V2.0](docs/V2.0.md) |
 | **V2.0** | 🚧 Em desenvolvimento | Reescrita em Go, contrato de fio, durabilidade estrutural, nó em software |
+| **V2.2** | 🚧 Em desenvolvimento | Configuração da instalação: canal → ponto de medição, catálogo de motivos, comissionamento |
 | V2.1 | 🔜 Planejada | mTLS com CA interna; identidade autenticada vs. reivindicada |
-| V2.2 | 🔜 Planejada | Configuração da instalação: canal → ponto de medição, catálogo de motivos |
 | V2.3 | 🔜 Planejada | Dashboards do Grafana como código; teste de carga |

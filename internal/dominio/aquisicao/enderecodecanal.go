@@ -47,6 +47,22 @@ func (e EnderecoDeCanal) String() string {
 	return construtor.String()
 }
 
+// ConteudoEnderecado e implementado pelos conteudos que se referem a um CANAL
+// especifico, e nao ao dispositivo como um todo.
+//
+// Interface, e nao um switch sobre tipo de conteudo, pelo mesmo motivo que
+// sustenta o resto do desenho: um switch seria mais uma lista de tipos, e listas do
+// mesmo conjunto divergem. Aqui, um conteudo novo declara se tem endereco
+// simplesmente implementando este metodo, e quem resolve ponto de medicao nao
+// precisa saber que ele existe.
+//
+// Nao a implementam, de proposito: saude da origem, lacuna de buffer e descritor.
+// Os tres descrevem o DISPOSITIVO, nao um canal — e nao ter endereco e a afirmacao
+// correta sobre eles, nao uma omissao.
+type ConteudoEnderecado interface {
+	EnderecoDoCanal() EnderecoDeCanal
+}
+
 // camposDoEndereco devolve a contribuicao do endereco ao modelo de leitura.
 //
 // Uma funcao, usada por todo conteudo enderecado, em vez de tres linhas repetidas

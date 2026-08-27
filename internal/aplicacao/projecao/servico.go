@@ -15,6 +15,8 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/adaptador/saida/projetortimescale"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/estadooperacional"
+	"github.com/ViktorWalde/SynkaCore/internal/dominio/identidadededispositivo"
+	"github.com/ViktorWalde/SynkaCore/internal/dominio/instalacao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/falha"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/resiliencia"
@@ -52,6 +54,24 @@ type Servico struct {
 	rastreador *estadooperacional.Rastreador
 	relogio    relogio.Relogio
 	registro   *slog.Logger
+
+	// observadorDeDescritor recebe as autodeclaracoes das origens.
+	//
+	// Funcao, e nao interface: ha um unico evento que interessa a quem observa, e
+	// uma interface transformaria isso em cerimonia. Nil quando ninguem observa.
+	//
+	// Alimentado pela PROJECAO, e nao pela ingestao, de proposito: assim o
+	// relatorio de comissionamento se reconstroi sozinho ao reprocessar o diario, e
+	// o caminho de aquisicao — o unico que nunca pode parar — nao ganha trabalho.
+	observadorDeDescritor func(dispositivo string, descritor aquisicao.DescritorDaOrigem, recebidoEm time.Time)
+
+	// configuracao e a instalacao, ou nil quando nenhuma foi carregada.
+	//
+	// Nil e operacao legitima, nao degradada: o gateway projeta canal e valor sem
+	// saber o que eles significam. E o estado normal antes do comissionamento, e
+	// exigir configuracao para projetar faria o sistema ficar mudo justamente na
+	// fase em que se quer ver se ele funciona.
+	configuracao *instalacao.Instalacao
 }
 
 // NovoServico constroi o laco.
@@ -63,6 +83,23 @@ func NovoServico(diario *diariosqlite.Diario, projetor *projetortimescale.Projet
 		diario: diario, projetor: projetor, catalogo: catalogo, pipeline: pipeline,
 		rastreador: rastreador, relogio: r, registro: registro,
 	}
+}
+
+// ComInstalacao liga a resolucao de canal para ponto de medicao.
+//
+// Sem ela, a projecao grava canal e valor sem significado. Com ela, cada linha
+// carrega o ponto, a grandeza, a unidade e as anomalias que a configuracao permite
+// detectar.
+func (s *Servico) ComInstalacao(configuracao *instalacao.Instalacao) *Servico {
+	s.configuracao = configuracao
+	return s
+}
+
+// ComObservadorDeDescritor liga o relatorio de comissionamento.
+func (s *Servico) ComObservadorDeDescritor(
+	observador func(string, aquisicao.DescritorDaOrigem, time.Time)) *Servico {
+	s.observadorDeDescritor = observador
+	return s
 }
 
 // Executar roda a projecao ate o contexto ser cancelado.
@@ -177,7 +214,7 @@ func (s *Servico) converter(registros []diariosqlite.RegistroDoDiario) ([]projet
 			continue
 		}
 
-		linhas = append(linhas, projetortimescale.LinhasDe(conteudo, projetortimescale.LinhaProjetada{
+		base := projetortimescale.LinhaProjetada{
 			InstanteObservado: registro.InstanteObservado,
 			TempoLigadoMs:     registro.TempoLigado.Milliseconds(),
 			IDDoDispositivo:   registro.IDDoDispositivo,
@@ -185,7 +222,19 @@ func (s *Servico) converter(registros []diariosqlite.RegistroDoDiario) ([]projet
 			NumeroDeSequencia: int64(registro.NumeroDeSequencia),
 			TipoDeConteudo:    registro.TipoDeConteudo,
 			ClasseDeDado:      registro.ClasseDeDado,
-		})...)
+		}
+		s.enriquecer(&base, registro.IDDoDispositivo, conteudo)
+
+		// O descritor alimenta o relatorio de comissionamento. Ele passa pela
+		// projecao como qualquer outro conteudo — e tambem vira linhas no modelo de
+		// leitura, porque "quando esta origem se apresentou, e com que firmware" e
+		// fato historico que vale guardar.
+		if descritor, ehDescritor := conteudo.(aquisicao.DescritorDaOrigem); ehDescritor &&
+			s.observadorDeDescritor != nil {
+			s.observadorDeDescritor(registro.IDDoDispositivo, descritor, registro.InstanteObservado)
+		}
+
+		linhas = append(linhas, projetortimescale.LinhasDe(conteudo, base)...)
 	}
 
 	return linhas, ultimoProjetado
@@ -213,4 +262,101 @@ func (s *Servico) aoFalhar(err error) {
 		slog.String("categoria", falha.CategoriaDe(err).String()),
 		slog.String("disjuntor", s.pipeline.Estado().String()),
 		slog.String("erro", err.Error()))
+}
+
+// enriquecer acrescenta a linha o que a configuracao da instalacao deriva.
+//
+// A origem afirma "canal 0 = 24,7". Esta funcao e onde esse numero ganha
+// significado: qual ponto de medicao, que grandeza, em que unidade, e se o valor
+// esta dentro da faixa plausivel do instrumento.
+//
+// Sem configuracao carregada, ela nao faz nada e a linha segue com os campos
+// nulos. Isso e operacao legitima, nao degradada — e o estado normal antes do
+// comissionamento.
+//
+// O derivado NUNCA sobrescreve o afirmado: o canal, o valor e o codigo de motivo
+// brutos continuam na linha ao lado do que foi resolvido. Se a configuracao
+// estiver errada e for corrigida amanha, tudo isto e recomputavel a partir do
+// diario, que guarda os bytes originais.
+func (s *Servico) enriquecer(linha *projetortimescale.LinhaProjetada,
+	nomeDoDispositivo string, conteudo aquisicao.ConteudoDecodificado) {
+
+	if s.configuracao == nil {
+		return
+	}
+
+	dispositivo, err := identidadededispositivo.AnalisarIDDoDispositivo(nomeDoDispositivo)
+	if err != nil {
+		// Alcancavel apenas com diario corrompido: o identificador ja passou por
+		// esta mesma validacao na ingestao. Nao ha o que enriquecer, e derrubar o
+		// ciclo por isso pararia a projecao da planta inteira.
+		return
+	}
+
+	enderecado, temEndereco := conteudo.(interface {
+		EnderecoDoCanal() aquisicao.EnderecoDeCanal
+	})
+	if !temEndereco {
+		// Conteudo sem endereco — saude da origem, lacuna de buffer, descritor.
+		// Eles descrevem o DISPOSITIVO, nao um canal, e nao tem ponto de medicao
+		// para resolver. Nao e anomalia.
+		return
+	}
+
+	configurado, existe := s.configuracao.Resolver(instalacao.ChaveDeCanal{
+		Dispositivo: dispositivo,
+		Endereco:    enderecado.EnderecoDoCanal(),
+	})
+	if !existe {
+		// Canal chegando sem configuracao. O dado e gravado com os campos nulos, e
+		// a lacuna aparece no relatorio de comissionamento — nao aqui, para nao
+		// inundar o log durante o comissionamento, que e quando isso mais acontece.
+		return
+	}
+
+	ponto := configurado.Ponto.String()
+	grandeza := instalacao.NomeDaGrandeza(configurado.Grandeza)
+	unidade := configurado.Unidade
+	linha.IDDoPontoDeMedicao = &ponto
+	linha.Grandeza = &grandeza
+	linha.Unidade = &unidade
+
+	if amostra, ehAmostra := conteudo.(aquisicao.AmostraEscalar); ehAmostra {
+		foraDeFaixa := configurado.ForaDeFaixa(float64(amostra.Valor))
+		linha.ForaDeFaixa = &foraDeFaixa
+	}
+
+	if mudanca, ehMudanca := conteudo.(aquisicao.MudancaDeEstadoDeMaquina); ehMudanca {
+		s.resolverMotivo(linha, mudanca.CodigoDoMotivo)
+	}
+}
+
+// resolverMotivo traduz o codigo de parada para o rotulo da instalacao.
+//
+// Codigo fora do catalogo NAO recusa o evento, e isso e uma suavizacao deliberada
+// do que a arquitetura de origem mandava ("o gateway recusa codigo fora do
+// catalogo").
+//
+// A razao: parada de maquina e evento discreto, a classe que NAO tolera perda.
+// Rejeitar o evento inteiro por causa de um rotulo desconhecido perderia o FATO
+// para preservar a consistencia do vocabulario — e o fato e o que o relatorio
+// conta. E o mesmo tratamento que o cracha nao reconhecido recebe: vira anomalia
+// auditavel, nao registro perdido.
+//
+// O codigo bruto permanece no campo reason_code da propria linha, entao a
+// resolucao e recomputavel se o catalogo for corrigido.
+func (s *Servico) resolverMotivo(linha *projetortimescale.LinhaProjetada, codigo uint32) {
+	rotulo, reconhecido := s.configuracao.RotuloDoMotivo(codigo)
+	if !reconhecido {
+		s.registro.Warn("codigo de motivo de parada fora do catalogo da instalacao; o evento foi preservado",
+			slog.Uint64("codigo_do_motivo", uint64(codigo)),
+			slog.String("id_do_dispositivo", linha.IDDoDispositivo))
+		return
+	}
+	if rotulo == "" {
+		// Codigo zero: parada ainda nao classificada. Informacao legitima, e nao
+		// dado faltando — nao ha rotulo a projetar e nao ha anomalia.
+		return
+	}
+	linha.RotuloDoMotivo = &rotulo
 }
