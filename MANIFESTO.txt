@@ -3,9 +3,9 @@
 # Gerado por 'make manifesto'. Reproduzivel: a mesma arvore produz o
 # mesmo resultado em qualquer maquina.
 #
-# commit:  b93b2fd8fe65e038e6f35bef2a285dd74427f5f1
-# arvore:  15 arquivo(s) com alteracao nao commitada
-# gerado:  2026-08-27T22:31:20Z
+# commit:  d3babf7d2c707151fefb565ee14fde148b85198d
+# arvore:  9 arquivo(s) com alteracao nao commitada
+# gerado:  2026-08-27T23:57:09Z
 #
 # ATENCAO: 'gerado' e a data desta execucao e NAO prova nada sozinha —
 # a data do sistema e ajustavel. O que ancora a data e o registro
@@ -13,8 +13,8 @@
 
 706e6d484ea816dd6961354167b990a484b54b7ad969e20fc5b51c273717301f  .gitignore
 b8d64263676ed4388311c41295c5b471a6db4e65a49b44cac252977fff0931e0  .golangci.yml
-2be8de47c23f8a378827d1f3093148e9f564db649b6c5e05be2536c2e4753a44  Makefile
-591b790d4118d021092ed374e92c76c47e207bc49108ae9a09345839e14168cf  README.md
+c79a2efaa19b1120114f8650cba2ef0a2b2070673b826c4e59f2db9ade60ca11  Makefile
+fcda62d528854c323ab6c961b045f482cb89f5ae50631c929f30373d534146bf  README.md
 a78224f480b8e92de895333b69af32f699a693118ecc4dbcd52310a637b75351  cmd/synkacore-credencial/main.go
 9e270dccb40d6517d3ff1126d2312f6c66f6b833814b4cfcfe55d8f91f727a51  configuracao/instalacao.exemplo.yaml
 1a291fa122d5f13e31672c1566a5ae804d9089e0e7e9baaa9c74997fb4375d72  contrato/proto/synkacore/contrato/v1/aquisicao.proto
@@ -29,11 +29,17 @@ a6b9c5977fcc0c668b24e9709407438c358c4f2a8767e18734c47b89d3229658  docs/V1.2.md
 9faa41a5121687502eb1860e8c1d81548004a34a108034902f1f0d8cb381385e  docs/V2.0.md
 e57a124c2bc7b4f3fce547009fa909f223a6a3780d14d8e621cce77398176b5a  docs/V2.1.md
 209a00f0eacf4cc5d3408276b347cd8a3ecdff8f79c291233a2441f89c1ab286  docs/V2.2.md
+eeda4b7206de504bb2b6496e1322d0f3fddf6c735f72bfc9dd9c5a7a2bd539da  docs/V2.3.md
 42a1c5c5860e0437c49043e58c472e138e22c832f93400e2b82b13fe599e9cc8  docs/VISAO-GERAL.md
+de1de365c387e4a3397ff9f2b856ecfcfc74a124367095d1c4902212de146bb4  ferramentas/geradordecarga/main.go
 037139116b9c16155a95296ab029628c247901d2080200ea536845720bcc1cec  ferramentas/geradordenopython/main.go
 8b36b8ea69be7b5455b578172ca7327090b97a9c5342debd39a4f81a3f530070  ferramentas/geradordenopython/preambulo.go
 f97846c57107361b699cec1fa0a302e5456b9440680da9f08328e6663c1e6ff1  go.mod
 a813acf10052cd77383cd49b4ba53558859d34ce4d4ce0d5ea6106fe5eb6a255  go.sum
+43571e1776a2bec1e83220f039cb21d580704b5e1d4d99baf5ccfeda5c31a068  implantacao/grafana/dashboards/comissionamento.json
+52350e8381a7b760c6a4cb5a933ef323d1bd5cd1291421b74f0bc4f2c61c5f3d  implantacao/grafana/dashboards/processo.json
+72eab6234da189b9cb89caaeb1addd63120f4e9190ff4dbe6c4af5f1fb696ced  implantacao/grafana/dashboards/provedor.yaml
+22071495c097c71e93a27340a03a2981c9a169e0ec4b792ff5b335b45ea309bb  implantacao/grafana/dashboards/saude.json
 b668601c530f60c3b8f4d705ea316f1d40ee047fba43295e1c376701e459c3e6  implantacao/grafana/datasources/timescaledb.yaml
 2b952d1d2d817fcf20658ec9eb0f573b3300b862cac9e98ca5b9b6cb9bc976c1  internal/adaptador/codecdefio/campobruto_test.go
 5258c287ef9366ef9805c065b800688c7acea38def1fdaeee39b78f26db612a1  internal/adaptador/codecdefio/codecdefio.go
@@ -50,8 +56,10 @@ a3d6f095f1eea628d5df28e93d95cf84db38da3e9ca01d26012fd551ec190bce  internal/adapt
 65baba98f24c92c54c022e469ca8dd7128434f9f425622226285da77622ec018  internal/adaptador/entrada/servidordetempo/servidordetempo.go
 d1466a68123604a369129207b5f3085f229e4ab6229185a82f02b61aa1f9855f  internal/adaptador/entrada/servidordetempo/servidordetempo_test.go
 d18443c6c038cfc9d9e15dd04e731a1e4230aaacd624daeb0bc6c2bd1fa333d6  internal/adaptador/saida/diariosqlite/ancora.go
+90c6e3f396ed7f4f46fbb967d51872b3ea5e7f4e7be6229bfb3c397e0750dd0c  internal/adaptador/saida/diariosqlite/apoiomedicao_test.go
 ac6df339997e88249c846c15de5228dbcd9caa90eb0f86e214a227ec6762d137  internal/adaptador/saida/diariosqlite/descritores.go
 9861bb4ed25968a72d3759cc743bc90909c499e7fe9e34b0f9ef1dd5708da580  internal/adaptador/saida/diariosqlite/diario.go
+b2176e06114edb62867023f055afd0a88228c2dcf51e61f759de21661679b8e5  internal/adaptador/saida/diariosqlite/diario_bench_test.go
 e12a8d830c4937a5a9717f11522f43ef5374e2dac1f594cf78e8866d701c4478  internal/adaptador/saida/diariosqlite/diario_test.go
 d04342af90518875fcf048af24ab6d85238a08467503638d8a8f875848beb56c  internal/adaptador/saida/diariosqlite/esquema.go
 e9c65978cbd87fe2e2c964015baf66e7ad81fd1b65606b3f1ca85574ff0932bd  internal/adaptador/saida/projetortimescale/projetor.go
@@ -163,9 +171,9 @@ f644e2665f7b1c8e7099ad6aa9cf7ba756348d579a06588ac0fae6d0a120fac4  legado/java-v1
 e22b6001a78ff769101baffb7b93cd65a4cc94cdd8ba840809054c54b6ed5917  migracoes/0001_modelo_de_leitura.sql
 764617c37ef3242caf8d89862e8298d64cd4d0d6d19c10e6144d4c299c1dfcdc  migracoes/0002_ponto_de_medicao.sql
 d353c79e98c6370439a9aa20314c3aa36a52edcb043fa1d1723d029e856c4acb  no-micropython/README.md
-bb59b6122d874a6d3464fc1f89f10c2fcc90a5bfa5065639db74274ce559f84e  no-micropython/__pycache__/synkacore_contrato.cpython-314.pyc
+654a77f3cb7fbb57a2613b5a7f4bc02b9869e8b53a1becd141f855a7bd3fe2c8  no-micropython/__pycache__/synkacore_contrato.cpython-314.pyc
 4a8e84ccadc06e7444718cee62c272a4f67b8a4dee46f1bbb5a59b53283bb181  no-micropython/main.py
 dbf5e4ab3d45e588d8ae817825fa0e8fa8f2d7a5799849a3263338918fbca886  no-micropython/synkacore_contrato.py
 
 # HASH RAIZ (sha256 sobre a lista de hashes acima):
-# 48acf38c18e1feb5c5b01930d924701d87d84b6a2f6250120cd698deaf92f8f8
+# d4440ec527ec108518e05ab0f82c292e8f2a103aed3452bad4f789898857c855

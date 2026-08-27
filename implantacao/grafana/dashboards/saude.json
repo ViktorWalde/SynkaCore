@@ -1,0 +1,86 @@
+{
+  "uid": "synkacore-saude",
+  "title": "SynkaCore — Saude da planta",
+  "tags": ["synkacore"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Fragmentacao de memoria nas origens",
+      "description": "Os dois campos viajam SEPARADOS de proposito. O risco real numa origem embarcada nao e o vazamento classico, e a FRAGMENTACAO: o total livre continua alto enquanto o maior bloco contiguo encolhe, ate a proxima alocacao de TLS falhar — tipicamente depois de dias. So o total esconderia exatamente a falha que mata a origem em campo.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 1 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT instante_observado AS time, id_do_dispositivo || ' — ' || CASE nome_do_campo WHEN 'heap_free_bytes' THEN 'livre total' ELSE 'maior bloco' END AS metric, valor_numerico AS value FROM leitura WHERE $__timeFilter(instante_observado) AND nome_do_campo IN ('heap_free_bytes','heap_largest_free_block_bytes') ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Registros descartados por saturacao",
+      "description": "Perda aceita continua sendo perda CONHECIDA, em numeros. Valor crescente significa buffer da origem saturando: o gateway esta fora, ou a origem produz mais que consegue entregar.",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 9 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT id_do_dispositivo, max(valor_numerico) AS descartados FROM leitura WHERE $__timeFilter(instante_observado) AND nome_do_campo = 'discarded_record_count' GROUP BY 1 ORDER BY 2 DESC"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Lacunas admitidas",
+      "description": "Perda NUNCA e silenciosa. Em vez de um buraco invisivel no relatorio, o descarte vira um fato visivel no dado, com intervalo e contagem. Linha aqui significa que uma origem admitiu ter perdido registros — e diz quais.",
+      "gridPos": { "h": 6, "w": 16, "x": 8, "y": 9 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT instante_observado AS \"quando\", id_do_dispositivo AS \"origem\", max(CASE WHEN nome_do_campo='lost_record_count' THEN valor_numerico END) AS \"perdidos\", max(CASE WHEN nome_do_campo='first_lost_sequence' THEN valor_numerico END) AS \"da sequencia\", max(CASE WHEN nome_do_campo='last_lost_sequence' THEN valor_numerico END) AS \"ate\" FROM leitura WHERE $__timeFilter(instante_observado) AND tipo_de_conteudo = 'lacuna_de_buffer' GROUP BY 1,2 ORDER BY 1 DESC LIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Origens em silencio",
+      "description": "Ausencia de dado NAO gera evento, entao ela e invisivel a menos que alguem pergunte ativamente. Uma origem cuja linha cai a zero parou de entregar — e isso nao apareceria em nenhum outro painel.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroup(instante_observado, '1m') AS time, id_do_dispositivo AS metric, count(*) AS value FROM leitura WHERE $__timeFilter(instante_observado) GROUP BY 1, 2 ORDER BY 1"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+# Provisionamento de paineis como CODIGO.
+#
+# E o argumento que decidiu o Grafana, e ele fica mais forte com produto replicado em
+# varias plantas: sem provisionamento versionado, cada instalacao exigiria remontar os
+# paineis a mao. Com dezenas de plantas, e a diferenca entre um `git clone` e trabalho
+# manual recorrente.
+apiVersion: 1
+
+providers:
+  - name: SynkaCore
+    type: file
+    # Nao editavel pela interface, de proposito. Painel alterado na tela e painel que
+    # existe numa planta e nao nas outras — e que se perde no proximo provisionamento
+    # sem ninguem entender por que.
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

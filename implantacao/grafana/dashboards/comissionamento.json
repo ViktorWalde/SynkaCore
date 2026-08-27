@@ -1,0 +1,55 @@
+{
+  "uid": "synkacore-comissionamento",
+  "title": "SynkaCore — Comissionamento",
+  "tags": ["synkacore"],
+  "timezone": "browser",
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Canais chegando SEM configuracao",
+      "description": "O dado e gravado com o ponto de medicao nulo em vez de recusado: recusar significaria perder dado durante o comissionamento, que e exatamente quando canal nao configurado acontece. Linha aqui e trabalho pendente, nao defeito.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT id_do_dispositivo AS \"origem\", max(CASE WHEN nome_do_campo='module_index' THEN valor_numerico END) AS \"modulo\", max(CASE WHEN nome_do_campo='channel_index' THEN valor_numerico END) AS \"canal\", count(*) AS \"registros\", max(instante_observado) AS \"ultimo\" FROM leitura WHERE $__timeFilter(instante_observado) AND id_do_ponto_de_medicao IS NULL AND tipo_de_conteudo IN ('amostra_escalar','leitura_de_contador','transicao_digital','amostra_agregada') GROUP BY 1, numero_de_sequencia / 1000 ORDER BY 5 DESC LIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Leituras fora da faixa do instrumento",
+      "description": "MARCADAS, nunca recusadas: a origem mediu aquilo, e descartar apagaria justamente o sintoma de um transdutor descalibrado ou de um cabo rompido. NULO na coluna significa faixa nao configurada, que e diferente de dentro da faixa.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT id_do_ponto_de_medicao AS \"ponto\", grandeza, unidade, count(*) AS \"ocorrencias\", min(valor_numerico) AS \"minimo visto\", max(valor_numerico) AS \"maximo visto\" FROM leitura WHERE $__timeFilter(instante_observado) AND fora_de_faixa IS TRUE AND nome_do_campo = 'value' GROUP BY 1,2,3 ORDER BY 4 DESC LIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Versao de firmware por origem",
+      "description": "Responde 'quais origens ainda nao foram atualizadas?' sem ir a campo conferir. E o proposito da versao de esquema no contrato: observabilidade de frota, e nao portao de compatibilidade — o gateway aceita todas as versoes ja publicadas.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT id_do_dispositivo AS \"origem\", max(CASE WHEN nome_do_campo='firmware_version' THEN valor_texto END) AS \"firmware\", max(CASE WHEN nome_do_campo='hardware_model' THEN valor_texto END) AS \"hardware\", max(CASE WHEN nome_do_campo='channel_count' THEN valor_numerico END) AS \"canais\", max(instante_observado) AS \"ultima autodeclaracao\" FROM leitura WHERE $__timeFilter(instante_observado) AND tipo_de_conteudo = 'descritor_da_origem' GROUP BY 1 ORDER BY 5 DESC"
+        }
+      ]
+    }
+  ]
+}

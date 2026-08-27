@@ -1,0 +1,76 @@
+{
+  "uid": "synkacore-processo",
+  "title": "SynkaCore — Processo",
+  "tags": ["synkacore"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "ponto",
+        "label": "Ponto de medicao",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "synkacore" },
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2,
+        "query": "SELECT DISTINCT id_do_ponto_de_medicao FROM leitura WHERE id_do_ponto_de_medicao IS NOT NULL ORDER BY 1"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Grandezas por ponto de medicao",
+      "description": "Agrupado por PONTO, nao por dispositivo: a serie historica pertence a posicao na planta, e trocar um sensor queimado nao pode romper a continuidade.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never" },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT instante_observado AS time, id_do_ponto_de_medicao || ' (' || coalesce(unidade,'?') || ')' AS metric, valor_numerico AS value FROM leitura WHERE $__timeFilter(instante_observado) AND nome_do_campo = 'value' AND id_do_ponto_de_medicao IN ($ponto) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Estado das maquinas",
+      "description": "Transicoes de estado operacional. O enum declara o estado OBSERVADO; como ele afeta a disponibilidade e regra de negocio do gateway, configuravel por planta.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT instante_observado AS time, coalesce(id_do_ponto_de_medicao, id_do_dispositivo) AS ponto, valor_texto AS estado, rotulo_do_motivo AS motivo FROM leitura WHERE $__timeFilter(instante_observado) AND nome_do_campo = 'machine_state' ORDER BY 1 DESC LIMIT 200"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Contagem acumulada de pecas",
+      "description": "ACUMULADA, nunca incremental: uma leitura acumulada perdida e reposta pela proxima, enquanto um incremento perdido some para sempre e a contagem fica permanentemente errada.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "type": "postgres", "uid": "synkacore" },
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT instante_observado AS time, coalesce(id_do_ponto_de_medicao, id_do_dispositivo) AS metric, valor_numerico AS value FROM leitura WHERE $__timeFilter(instante_observado) AND nome_do_campo = 'accumulated_count' ORDER BY 1"
+        }
+      ]
+    }
+  ]
+}

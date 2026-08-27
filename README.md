@@ -75,6 +75,18 @@ duplicatas          : NENHUMA
 lacunas de amostragem: NENHUMA
 ```
 
+### E medido, não estimado
+
+Capacidade sob carga, contra disco real — a pergunta que estava aberta desde a V1.x:
+
+| Origens | Envelopes/s | p50 | p99 |
+|---|---|---|---|
+| 10 | 950 | 25 ms | 51 ms |
+| 200 | **18.999** | 494 ms | 945 ms |
+
+Teto de **~20.000 envelopes/s** neste hardware. Acima disso nada quebra: a latência
+sobe e as origens bufferizam. Detalhes e o gargalo medido em [V2.3](docs/V2.3.md).
+
 ---
 
 ## Duas origens, o mesmo contrato
@@ -306,6 +318,8 @@ make compilar     # binários estáticos, sem cgo
 make contrato     # regera o Go a partir do .proto
 make no-micropython  # regera o codificador do nó a partir do .proto
 make cobertura    # relatório de cobertura em HTML
+make medir        # benchmarks do diário contra disco real
+make carga        # gerador de carga contra um gateway no ar
 ```
 
 `make verificar` é o portão completo — qualquer falha derruba o build. Disciplina imposta
@@ -327,6 +341,8 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 - **[V2.1](docs/V2.1.md)** — mTLS com CA interna, identidade autenticada contra
   reivindicada, e o servidor de tempo que torna a validação possível numa origem sem
   relógio.
+- **[V2.3](docs/V2.3.md)** — capacidade medida, onde está o gargalo, e os painéis do
+  Grafana como código.
 - **[Visão geral visual](docs/VISAO-GERAL.md)** — diagramas de fluxo e cenários de queda.
 - **[Trade-offs](docs/TRADE-OFFS.md)** — decisões técnicas e seus custos.
 - **[Qualidade](docs/QUALIDADE.md)** — os portões do build.
@@ -350,4 +366,4 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 | **V2.0** | 🚧 Em desenvolvimento | Reescrita em Go, contrato de fio, durabilidade estrutural, nó em software |
 | **V2.2** | 🚧 Em desenvolvimento | Configuração da instalação: canal → ponto de medição, catálogo de motivos, comissionamento |
 | **V2.1** | 🚧 Em desenvolvimento | mTLS com CA interna, identidade autenticada vs. reivindicada, servidor de tempo |
-| V2.3 | 🔜 Planejada | Dashboards do Grafana como código; teste de carga |
+| **V2.3** | 🚧 Em desenvolvimento | Capacidade medida, gargalo identificado, painéis do Grafana como código |

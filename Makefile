@@ -36,6 +36,7 @@ compilar:
 	$(CGO_PARA_BINARIO) go build -trimpath -ldflags='-s -w' -o $(BINARIOS)/synkacore-gateway ./cmd/synkacore-gateway
 	$(CGO_PARA_BINARIO) go build -trimpath -ldflags='-s -w' -o $(BINARIOS)/synkacore-no ./cmd/synkacore-no
 	$(CGO_PARA_BINARIO) go build -trimpath -ldflags='-s -w' -o $(BINARIOS)/synkacore-credencial ./cmd/synkacore-credencial
+	$(CGO_PARA_BINARIO) go build -trimpath -ldflags='-s -w' -o $(BINARIOS)/synkacore-carga ./ferramentas/geradordecarga
 
 .PHONY: limpar
 limpar:
@@ -140,6 +141,38 @@ gateway-completo: compilar
 .PHONY: no
 no: compilar
 	./$(BINARIOS)/synkacore-no
+
+# ---------------------------------------------------------------- medicao
+
+# DISCO_DE_MEDICAO precisa apontar para disco PERSISTENTE, nunca tmpfs.
+#
+# Isto custou uma medicao inteira jogada fora: b.TempDir() segue o TMPDIR, e onde
+# /tmp e tmpfs o fsync nunca alcanca midia fisica. Os numeros sao reais e medem a
+# RAM — o lote unitario aparecia 7,5x mais rapido do que e.
+#
+# Publicar isso como capacidade seria pior que nao medir: alguem dimensionaria uma
+# instalacao com um numero que o disco nunca vai entregar.
+DISCO_DE_MEDICAO ?= $(HOME)/.cache/synkacore-medicao
+
+.PHONY: medir
+medir:
+	@mkdir -p $(DISCO_DE_MEDICAO)
+	@df -T $(DISCO_DE_MEDICAO) | tail -1 | grep -q tmpfs && { \
+		echo "$(DISCO_DE_MEDICAO) esta em tmpfs: a medicao descreveria a RAM, nao o diario."; \
+		echo "Defina DISCO_DE_MEDICAO para uma pasta em disco persistente."; exit 1; } || true
+	SYNKACORE_DISCO_DE_MEDICAO=$(DISCO_DE_MEDICAO) \
+		$(CGO_PARA_TESTE) go test -run='^$$' -bench=. -benchtime=20x \
+		./internal/adaptador/saida/diariosqlite/
+
+# carga responde "quantos dispositivos o gateway aguenta?" contra um gateway no ar.
+#
+# Exige o gateway rodando: ele mede o caminho INTEIRO — serializacao, rede, contencao
+# no diario — e nao a chamada em processo, que deixaria de fora justamente os
+# candidatos a gargalo.
+.PHONY: carga
+carga: compilar
+	./$(BINARIOS)/synkacore-carga -origens $(or $(ORIGENS),50) -lote $(or $(LOTE),100) \
+		-intervalo $(or $(INTERVALO),1s) -duracao $(or $(DURACAO),30s)
 
 # ---------------------------------------------------------------- no micropython
 
