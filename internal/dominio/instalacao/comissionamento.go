@@ -2,6 +2,7 @@ package instalacao
 
 import (
 	"sort"
+	"time"
 
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/identidadededispositivo"
@@ -122,8 +123,12 @@ type CanalDeclarado struct {
 //
 // A configuracao e AUTORITATIVA em todos os casos. Divergencia nunca sobrescreve o
 // que a instalacao declara; ela apenas denuncia.
+// instante e quando a conferencia acontece, e ele importa: com vigencias, um canal
+// pode estar configurado hoje e nao estar amanha. Conferir contra a configuracao
+// vigente NAQUELE momento e o que impede o relatorio de acusar como "nao
+// configurado" um canal cuja vigencia ainda nao comecou — ou ja terminou.
 func (i *Instalacao) ConferirDescritor(dispositivo identidadededispositivo.IDDoDispositivo,
-	declarados []CanalDeclarado) []Divergencia {
+	declarados []CanalDeclarado, instante time.Time) []Divergencia {
 
 	// Sem pre-alocacao, de proposito, contra a sugestao do linter prealloc.
 	//
@@ -142,7 +147,7 @@ func (i *Instalacao) ConferirDescritor(dispositivo identidadededispositivo.IDDoD
 		vistos[declarado.Endereco] = struct{}{}
 		canal := ChaveDeCanal{Dispositivo: dispositivo, Endereco: declarado.Endereco}
 
-		configurado, existe := i.Resolver(canal)
+		configurado, existe := i.Resolver(canal, instante)
 		if !existe {
 			divergencias = append(divergencias, Divergencia{
 				Especie:   DivergenciaCanalNaoConfigurado,
@@ -184,7 +189,12 @@ func (i *Instalacao) ConferirDescritor(dispositivo identidadededispositivo.IDDoD
 		if _, declarado := vistos[canal.Endereco]; declarado {
 			continue
 		}
-		configurado, _ := i.Resolver(canal)
+		configurado, vigente := i.Resolver(canal, instante)
+		if !vigente {
+			// Canal cuja vigencia ja terminou, ou ainda nao comecou. A origem nao
+			// declara-lo e o comportamento CORRETO, e nao uma divergencia.
+			continue
+		}
 		divergencias = append(divergencias, Divergencia{
 			Especie:  DivergenciaCanalAusente,
 			Canal:    canal,

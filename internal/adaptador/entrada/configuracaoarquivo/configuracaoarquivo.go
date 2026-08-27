@@ -16,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -64,6 +65,51 @@ type pontoDoArquivo struct {
 	Unidade     string   `yaml:"unidade"`
 	FaixaMinima *float64 `yaml:"faixa_minima"`
 	FaixaMaxima *float64 `yaml:"faixa_maxima"`
+
+	// Vigencia, ambas opcionais. Ausentes significam "desde sempre" e "ainda
+	// aberto", que e o caso comum de uma instalacao que nunca trocou nada.
+	//
+	// Texto, e nao time.Time: o YAML converteria `2026-08-27` sozinho, mas em UTC
+	// e sem dizer que fez isso. Interpretando aqui, a ambiguidade de fuso fica
+	// explicita e documentada em vez de silenciosa.
+	VigenteDe  string `yaml:"vigente_de"`
+	VigenteAte string `yaml:"vigente_ate"`
+}
+
+// formatoDeDataSimples aceita a forma que um tecnico escreve naturalmente.
+const formatoDeDataSimples = "2006-01-02"
+
+// analisarVigencia interpreta uma data da configuracao.
+//
+// Aceita duas formas, e a diferenca entre elas importa:
+//
+//	2026-08-27                   — dia, interpretado como meia-noite UTC
+//	2026-08-27T14:30:00-03:00    — instante exato, com fuso declarado
+//
+// A forma simples e ambigua por natureza: "trocamos o sensor no dia 27" quer dizer
+// horario LOCAL, e a planta esta em UTC-3. Um mapeamento que comeca a meia-noite
+// UTC vale a partir das 21h do dia anterior no horario local.
+//
+// Isso e aceitavel porque troca de sensor e evento de manutencao, nao de segundo —
+// mas nao pode ficar implicito, e por isso a forma precisa existe e esta
+// documentada. E o mesmo problema de fronteira de fuso que ainda esta em aberto
+// para relatorio por turno.
+func analisarVigencia(bruto, ondeEstou, qual string) (time.Time, error) {
+	bruto = strings.TrimSpace(bruto)
+	if bruto == "" {
+		return time.Time{}, nil
+	}
+
+	if instante, err := time.Parse(time.RFC3339, bruto); err == nil {
+		return instante.UTC(), nil
+	}
+	if dia, err := time.Parse(formatoDeDataSimples, bruto); err == nil {
+		return dia.UTC(), nil
+	}
+
+	return time.Time{}, falha.Nova(falha.CategoriaEntradaInvalida, operacaoCarregar,
+		ondeEstou+": "+qual+" invalido: "+bruto+
+			". Use 2026-08-27 (meia-noite UTC) ou 2026-08-27T14:30:00-03:00 (instante exato)")
 }
 
 // Carregar le e valida a configuracao da instalacao.
@@ -106,7 +152,9 @@ func Carregar(caminho string) (*instalacao.Instalacao, error) {
 
 // montar converte a forma do arquivo para o dominio, validando cada campo.
 func montar(doArquivo arquivo) (*instalacao.Instalacao, error) {
-	pontos := make(map[instalacao.ChaveDeCanal]instalacao.PontoConfigurado, len(doArquivo.Pontos))
+	// Uma LISTA por canal: o mesmo canal pode ter alimentado pontos diferentes em
+	// periodos diferentes, e essa e justamente a forma de registrar troca de sensor.
+	mapeamentos := make(map[instalacao.ChaveDeCanal][]instalacao.PontoConfigurado, len(doArquivo.Pontos))
 
 	for indice, doPonto := range doArquivo.Pontos {
 		// O indice entra na mensagem porque o erro pode ser numa lista de duzentos
@@ -129,6 +177,15 @@ func montar(doArquivo arquivo) (*instalacao.Instalacao, error) {
 				ondeEstou+" ("+doPonto.Ponto+")", err)
 		}
 
+		vigenteDe, err := analisarVigencia(doPonto.VigenteDe, ondeEstou, "vigente_de")
+		if err != nil {
+			return nil, err
+		}
+		vigenteAte, err := analisarVigencia(doPonto.VigenteAte, ondeEstou, "vigente_ate")
+		if err != nil {
+			return nil, err
+		}
+
 		canal := instalacao.ChaveDeCanal{
 			Dispositivo: dispositivo,
 			Endereco: aquisicao.EnderecoDeCanal{
@@ -137,27 +194,25 @@ func montar(doArquivo arquivo) (*instalacao.Instalacao, error) {
 			},
 		}
 
-		// Dois pontos no mesmo canal e ambiguidade que o mapa esconderia: o segundo
-		// sobrescreveria o primeiro em silencio, e a instalacao rodaria medindo
-		// outra coisa sem que nada acusasse.
-		if anterior, repetido := pontos[canal]; repetido {
-			return nil, falha.Nova(falha.CategoriaEntradaInvalida, operacaoCarregar,
-				ondeEstou+": o canal "+canal.String()+" ja esta configurado para o ponto "+
-					anterior.Ponto.String())
-		}
-
-		pontos[canal] = instalacao.PontoConfigurado{
+		// Entradas repetidas para o mesmo canal NAO sao mais erro aqui: elas sao a
+		// forma de registrar troca de sensor. Quem recusa sobreposicao de vigencia e
+		// NovaInstalacao, que ve a lista inteira — verificar aqui, entrada por
+		// entrada, seria a mesma regra em dois lugares, e duas checagens do mesmo
+		// conceito divergem.
+		mapeamentos[canal] = append(mapeamentos[canal], instalacao.PontoConfigurado{
 			Ponto:       ponto,
 			Grandeza:    grandeza,
 			Unidade:     strings.TrimSpace(doPonto.Unidade),
 			FaixaMinima: doPonto.FaixaMinima,
 			FaixaMaxima: doPonto.FaixaMaxima,
-		}
+			VigenteDe:   vigenteDe,
+			VigenteAte:  vigenteAte,
+		})
 	}
 
 	parametros := instalacao.ParametrosDeInstalacao{
-		ID:     strings.TrimSpace(doArquivo.Instalacao),
-		Pontos: pontos,
+		ID:          strings.TrimSpace(doArquivo.Instalacao),
+		Mapeamentos: mapeamentos,
 	}
 	if doArquivo.Motivos != nil {
 		parametros.Motivos = doArquivo.Motivos.Codigos

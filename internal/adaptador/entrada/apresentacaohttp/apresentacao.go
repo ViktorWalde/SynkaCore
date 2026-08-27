@@ -123,6 +123,7 @@ func (a *Apresentacao) Rotas() *http.ServeMux {
 	rotas.HandleFunc("GET "+CaminhoDeLeituras, a.responderLeituras)
 	rotas.HandleFunc("GET "+CaminhoDoContrato, a.responderContrato)
 	rotas.HandleFunc("GET "+CaminhoDeComissionamento, a.responderComissionamento)
+	rotas.HandleFunc("GET "+CaminhoDoEsboco, a.responderEsboco)
 	return rotas
 }
 

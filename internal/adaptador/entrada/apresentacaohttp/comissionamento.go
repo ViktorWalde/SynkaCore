@@ -123,6 +123,11 @@ func (a *Apresentacao) responderComissionamento(escritor http.ResponseWriter, _ 
 		relatorio.Installation = a.configuracao.ID()
 	}
 
+	// A conferencia usa o instante da CONSULTA, e nao o da declaracao: o tecnico
+	// quer saber se a fiacao esta certa AGORA. Um canal cuja vigencia terminou
+	// ontem nao deve aparecer como divergencia hoje.
+	agora := a.relogio.Agora()
+
 	a.declaracoes.mutex.RLock()
 	declaracoes := make(map[string]declaracaoDaOrigem, len(a.declaracoes.porDispositivo))
 	for nome, declaracao := range a.declaracoes.porDispositivo {
@@ -163,7 +168,7 @@ func (a *Apresentacao) responderComissionamento(escritor http.ResponseWriter, _ 
 		if err != nil {
 			continue
 		}
-		for _, divergencia := range a.configuracao.ConferirDescritor(dispositivo, declaracao.canais) {
+		for _, divergencia := range a.configuracao.ConferirDescritor(dispositivo, declaracao.canais, agora) {
 			relatorio.Divergences = append(relatorio.Divergences, divergenciaRelatada{
 				Kind:             divergencia.Especie.String(),
 				DeviceID:         nome,

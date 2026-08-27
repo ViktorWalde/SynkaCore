@@ -111,8 +111,16 @@ Sem configuração da instalação, o gateway grava `canal 0 = 24,7` — verdade
 responde nada. Com ela, cada leitura carrega o ponto de medição, a grandeza e a
 unidade, e o `/comissionamento` denuncia canal trocado no painel.
 
+Não escreva o arquivo do zero — o gateway o gera a partir do que as origens já
+declararam, e só sobra nomear os pontos:
+
 ```bash
-cp configuracao/instalacao.exemplo.yaml configuracao/instalacao.yaml
+./bin/synkacore-gateway &
+./bin/synkacore-no &
+
+curl http://127.0.0.1:8080/comissionamento/esboco > configuracao/instalacao.yaml
+# edite: substitua cada AJUSTAR-... pelo nome real do ponto de medição
+
 ./bin/synkacore-gateway -instalacao configuracao/instalacao.yaml
 curl http://127.0.0.1:8080/comissionamento
 ```
@@ -153,6 +161,7 @@ Dois servidores, em interfaces separadas, porque o gateway fica entre duas redes
 | `GET /leituras?limite=N` | Registros recentes do diário, já decodificados |
 | `GET /contrato` | Tipos de conteúdo que este gateway reconhece |
 | `GET /comissionamento` | Desacordos entre o que as origens declaram e o que a instalação configura |
+| `GET /comissionamento/esboco` | YAML de configuração gerado a partir do que as origens já declararam |
 
 O `/saude` reporta os dois estágios **separados**, e a distinção decide se alguém é
 acordado:

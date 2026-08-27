@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/ViktorWalde/SynkaCore/internal/adaptador/saida/projetortimescale"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
@@ -20,6 +21,8 @@ import (
 )
 
 const dispositivoDeTeste = "camara-01"
+
+var instanteDeReferencia = time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
 
 func faixa(valor float64) *float64 { return &valor }
 
@@ -48,14 +51,14 @@ func servicoDeTeste(t *testing.T, comConfiguracao bool) *Servico {
 
 	configuracao, err := instalacao.NovaInstalacao(instalacao.ParametrosDeInstalacao{
 		ID: "planta-teste",
-		Pontos: map[instalacao.ChaveDeCanal]instalacao.PontoConfigurado{
-			{Dispositivo: dispositivo, Endereco: aquisicao.EnderecoDeCanal{IndiceDoCanal: 0}}: {
+		Mapeamentos: map[instalacao.ChaveDeCanal][]instalacao.PontoConfigurado{
+			{Dispositivo: dispositivo, Endereco: aquisicao.EnderecoDeCanal{IndiceDoCanal: 0}}: {{
 				Ponto:       ponto,
 				Grandeza:    temperatura,
 				Unidade:     "Cel",
 				FaixaMinima: faixa(-20),
 				FaixaMaxima: faixa(200),
-			},
+			}},
 		},
 		Motivos:          map[uint32]string{40: "Falha eletrica"},
 		VersaoDosMotivos: 1,
@@ -70,7 +73,12 @@ func enriquecer(t *testing.T, servico *Servico,
 	conteudo aquisicao.ConteudoDecodificado) projetortimescale.LinhaProjetada {
 	t.Helper()
 
-	linha := projetortimescale.LinhaProjetada{IDDoDispositivo: dispositivoDeTeste}
+	// O instante observado importa: a resolucao e por VIGENCIA, e uma linha sem
+	// instante cairia no tempo zero, antes de qualquer vigencia declarada.
+	linha := projetortimescale.LinhaProjetada{
+		IDDoDispositivo:   dispositivoDeTeste,
+		InstanteObservado: instanteDeReferencia,
+	}
 	servico.enriquecer(&linha, dispositivoDeTeste, conteudo)
 	return linha
 }

@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS diario (
 CREATE INDEX IF NOT EXISTS idx_diario_sessao_sequencia
     ON diario (id_do_dispositivo, id_da_sessao_de_boot, numero_de_sequencia);
 
+-- Responde "qual o ultimo descritor de cada origem?" sem varrer o diario.
+--
+-- Serve a reconstrucao do relatorio de comissionamento na partida: o descritor ja
+-- esta gravado aqui, e guarda-lo numa segunda tabela seria uma copia do mesmo fato,
+-- que divergiria. Sem este indice, a consulta varreria o diario inteiro a cada
+-- partida do gateway.
+CREATE INDEX IF NOT EXISTS idx_diario_tipo_dispositivo
+    ON diario (tipo_de_conteudo, id_do_dispositivo, id DESC);
+
 -- cursor_de_projecao guarda ate onde cada consumidor ja projetou.
 --
 -- Cursor, e nao uma coluna "projetado" no proprio diario, por tres razoes:

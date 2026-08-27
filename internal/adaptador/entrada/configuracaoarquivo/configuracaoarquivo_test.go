@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ViktorWalde/SynkaCore/internal/adaptador/entrada/configuracaoarquivo"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
@@ -47,7 +48,7 @@ func TestOExemploDistribuidoCarrega(t *testing.T) {
 	ponto, existe := configurada.Resolver(instalacao.ChaveDeCanal{
 		Dispositivo: dispositivo,
 		Endereco:    aquisicao.EnderecoDeCanal{IndiceDoCanal: 0},
-	})
+	}, time.Now())
 	if !existe {
 		t.Fatal("o canal 0 do exemplo deveria resolver")
 	}
@@ -92,7 +93,7 @@ func TestOExemploCasaComOQueONoEnvia(t *testing.T) {
 		{Endereco: aquisicao.EnderecoDeCanal{IndiceDoCanal: 3}, Grandeza: contagem, Unidade: "1"},
 	}
 
-	if divergencias := configurada.ConferirDescritor(dispositivo, declarados); len(divergencias) != 0 {
+	if divergencias := configurada.ConferirDescritor(dispositivo, declarados, time.Now()); len(divergencias) != 0 {
 		for _, divergencia := range divergencias {
 			t.Errorf("o exemplo diverge do que o no envia: %s em %s (declarado %q, esperado %q)",
 				divergencia.Especie, divergencia.Canal, divergencia.Declarado, divergencia.Esperado)

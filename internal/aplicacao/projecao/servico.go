@@ -55,16 +55,6 @@ type Servico struct {
 	relogio    relogio.Relogio
 	registro   *slog.Logger
 
-	// observadorDeDescritor recebe as autodeclaracoes das origens.
-	//
-	// Funcao, e nao interface: ha um unico evento que interessa a quem observa, e
-	// uma interface transformaria isso em cerimonia. Nil quando ninguem observa.
-	//
-	// Alimentado pela PROJECAO, e nao pela ingestao, de proposito: assim o
-	// relatorio de comissionamento se reconstroi sozinho ao reprocessar o diario, e
-	// o caminho de aquisicao — o unico que nunca pode parar — nao ganha trabalho.
-	observadorDeDescritor func(dispositivo string, descritor aquisicao.DescritorDaOrigem, recebidoEm time.Time)
-
 	// configuracao e a instalacao, ou nil quando nenhuma foi carregada.
 	//
 	// Nil e operacao legitima, nao degradada: o gateway projeta canal e valor sem
@@ -92,13 +82,6 @@ func NovoServico(diario *diariosqlite.Diario, projetor *projetortimescale.Projet
 // detectar.
 func (s *Servico) ComInstalacao(configuracao *instalacao.Instalacao) *Servico {
 	s.configuracao = configuracao
-	return s
-}
-
-// ComObservadorDeDescritor liga o relatorio de comissionamento.
-func (s *Servico) ComObservadorDeDescritor(
-	observador func(string, aquisicao.DescritorDaOrigem, time.Time)) *Servico {
-	s.observadorDeDescritor = observador
 	return s
 }
 
@@ -225,15 +208,6 @@ func (s *Servico) converter(registros []diariosqlite.RegistroDoDiario) ([]projet
 		}
 		s.enriquecer(&base, registro.IDDoDispositivo, conteudo)
 
-		// O descritor alimenta o relatorio de comissionamento. Ele passa pela
-		// projecao como qualquer outro conteudo — e tambem vira linhas no modelo de
-		// leitura, porque "quando esta origem se apresentou, e com que firmware" e
-		// fato historico que vale guardar.
-		if descritor, ehDescritor := conteudo.(aquisicao.DescritorDaOrigem); ehDescritor &&
-			s.observadorDeDescritor != nil {
-			s.observadorDeDescritor(registro.IDDoDispositivo, descritor, registro.InstanteObservado)
-		}
-
 		linhas = append(linhas, projetortimescale.LinhasDe(conteudo, base)...)
 	}
 
@@ -303,10 +277,14 @@ func (s *Servico) enriquecer(linha *projetortimescale.LinhaProjetada,
 		return
 	}
 
+	// Resolvido pelo instante em que o dado foi OBSERVADO, e nao pelo instante
+	// atual. Uma leitura gravada antes de uma troca de sensor precisa continuar
+	// sendo interpretada com a configuracao que valia naquele momento — senao
+	// reprocessar o diario amanha atribuiria o dado de ontem ao ponto errado.
 	configurado, existe := s.configuracao.Resolver(instalacao.ChaveDeCanal{
 		Dispositivo: dispositivo,
 		Endereco:    enderecado.EnderecoDoCanal(),
-	})
+	}, linha.InstanteObservado)
 	if !existe {
 		// Canal chegando sem configuracao. O dado e gravado com os campos nulos, e
 		// a lacuna aparece no relatorio de comissionamento — nao aqui, para nao

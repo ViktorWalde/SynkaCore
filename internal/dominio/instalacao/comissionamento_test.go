@@ -10,17 +10,13 @@ import (
 func declarado(t *testing.T, indice uint32, nomeDaGrandeza, unidade string) instalacao.CanalDeclarado {
 	t.Helper()
 
-	var grandeza instalacao.Grandeza
+	var declarada instalacao.Grandeza
 	if nomeDaGrandeza != "" {
-		resolvida, err := instalacao.AnalisarGrandeza(nomeDaGrandeza)
-		if err != nil {
-			t.Fatalf("grandeza de teste invalida: %v", err)
-		}
-		grandeza = resolvida
+		declarada = grandeza(t, nomeDaGrandeza)
 	}
 	return instalacao.CanalDeclarado{
 		Endereco: aquisicao.EnderecoDeCanal{IndiceDoCanal: indice},
-		Grandeza: grandeza,
+		Grandeza: declarada,
 		Unidade:  unidade,
 	}
 }
@@ -41,7 +37,7 @@ func TestOrigemQueBateComAConfiguracaoNaoProduzDivergencia(t *testing.T) {
 		[]instalacao.CanalDeclarado{
 			declarado(t, 0, "temperatura", "Cel"),
 			declarado(t, 1, "pressao", "kPa"),
-		})
+		}, depoisDaTroca)
 
 	if len(divergencias) != 0 {
 		t.Errorf("instalacao correta produziu divergencias: %v", especies(divergencias))
@@ -62,7 +58,7 @@ func TestCanalTrocadoNoPainelEDenunciado(t *testing.T) {
 		[]instalacao.CanalDeclarado{
 			declarado(t, 0, "pressao", "kPa"),
 			declarado(t, 1, "temperatura", "Cel"),
-		})
+		}, depoisDaTroca)
 
 	if len(divergencias) != 2 {
 		t.Fatalf("divergencias = %v, esperado duas de grandeza", especies(divergencias))
@@ -92,7 +88,7 @@ func TestPontoConfiguradoQueNuncaRecebeDadoEDenunciado(t *testing.T) {
 
 	// A origem so declara o canal 0; o canal 1 esta configurado e nao aparece.
 	divergencias := configurada.ConferirDescritor(dispositivo(t, "camara-01"),
-		[]instalacao.CanalDeclarado{declarado(t, 0, "temperatura", "Cel")})
+		[]instalacao.CanalDeclarado{declarado(t, 0, "temperatura", "Cel")}, depoisDaTroca)
 
 	if len(divergencias) != 1 {
 		t.Fatalf("divergencias = %v, esperado uma", especies(divergencias))
@@ -113,7 +109,7 @@ func TestCanalNaoConfiguradoEDenunciadoSemSerErro(t *testing.T) {
 			declarado(t, 0, "temperatura", "Cel"),
 			declarado(t, 1, "pressao", "kPa"),
 			declarado(t, 7, "aceleracao_de_vibracao", "m/s2"),
-		})
+		}, depoisDaTroca)
 
 	if len(divergencias) != 1 {
 		t.Fatalf("divergencias = %v, esperado uma", especies(divergencias))
@@ -134,7 +130,7 @@ func TestUnidadeDivergenteEDenunciada(t *testing.T) {
 		[]instalacao.CanalDeclarado{
 			declarado(t, 0, "temperatura", "K"), // kelvin em vez de celsius
 			declarado(t, 1, "pressao", "kPa"),
-		})
+		}, depoisDaTroca)
 
 	if len(divergencias) != 1 {
 		t.Fatalf("divergencias = %v, esperado uma", especies(divergencias))
@@ -160,7 +156,7 @@ func TestOrigemQueNaoAfirmaNadaNaoDiverge(t *testing.T) {
 		[]instalacao.CanalDeclarado{
 			declarado(t, 0, "", ""),
 			declarado(t, 1, "", ""),
-		})
+		}, depoisDaTroca)
 
 	if len(divergencias) != 0 {
 		t.Errorf("origem sem autodeclaracao produziu divergencias: %v", especies(divergencias))
@@ -180,9 +176,9 @@ func TestOrdemDoRelatorioEEstavel(t *testing.T) {
 		declarado(t, 8, "rotacao", "1/min"),
 	}
 
-	primeira := especies(configurada.ConferirDescritor(dispositivo(t, "camara-01"), declarados))
+	primeira := especies(configurada.ConferirDescritor(dispositivo(t, "camara-01"), declarados, depoisDaTroca))
 	for range 20 {
-		atual := configurada.ConferirDescritor(dispositivo(t, "camara-01"), declarados)
+		atual := configurada.ConferirDescritor(dispositivo(t, "camara-01"), declarados, depoisDaTroca)
 		for indice, especie := range especies(atual) {
 			if especie != primeira[indice] {
 				t.Fatal("a ordem do relatorio de comissionamento variou entre execucoes")

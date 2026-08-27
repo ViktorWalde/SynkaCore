@@ -12,6 +12,16 @@
 # ACREDITA medir; ele serve para o gateway detectar discordancia — canal trocado no
 # painel — e nunca para sobrescrever o que esta aqui.
 #
+# NAO ESCREVA ESTE ARQUIVO DO ZERO. O gateway gera um esboco a partir do que as
+# origens ja declararam, com dispositivo, modulo, canal, grandeza e unidade
+# preenchidos — e portanto casando com o fio por construcao:
+#
+#     curl http://127.0.0.1:8080/comissionamento/esboco > configuracao/instalacao.yaml
+#
+# Sobra voce nomear os pontos de medicao, que e a unica parte que so uma pessoa
+# sabe. Digitar modulo e canal a mao para dezenas de entradas e onde o erro de
+# comissionamento nasce.
+#
 # Copie para instalacao.yaml e ajuste. O gateway o carrega com:
 #
 #     ./bin/synkacore-gateway -instalacao configuracao/instalacao.yaml
@@ -103,6 +113,59 @@ pontos_de_medicao:
     ponto: curtimento.camara-01.pecas-produzidas
     grandeza: contagem_de_pecas
     unidade: "1"
+
+# ---------------------------------------------------------------------------
+# TROCA DE SENSOR: VIGENCIA
+# ---------------------------------------------------------------------------
+#
+# `vigente_de` e `vigente_ate` sao OPCIONAIS. Ausentes significam "desde sempre" e
+# "ainda aberto", que e o caso comum de quem nunca trocou nada — e por isso as
+# entradas acima nao as declaram.
+#
+# Elas existem porque a serie historica pertence ao PONTO DE MEDICAO, nao a peca de
+# hardware. Trocar um sensor queimado nao pode romper a continuidade da serie, e o
+# dado gravado ANTES da troca precisa continuar sendo interpretado com a
+# configuracao que valia naquele momento.
+#
+# Sem vigencia, corrigir a unidade de um ponto hoje reinterpretaria retroativamente
+# todo o historico — e uma serie que muda de significado ao se editar um arquivo
+# nao e uma serie confiavel.
+#
+# Para registrar uma troca: FECHE a entrada antiga e ABRA a nova. Nao apague a
+# antiga; ela e o que explica o dado ja gravado.
+#
+# O intervalo e fechado-aberto: [vigente_de, vigente_ate). O instante exato da
+# troca ja pertence ao sensor NOVO.
+#
+# Exemplo — o mancal era medido pela camara-01 e passou para a camara-02:
+#
+#   - dispositivo: camara-de-vacuo-01
+#     canal: 4
+#     ponto: curtimento.mancal.temperatura
+#     grandeza: temperatura
+#     unidade: Cel
+#     vigente_ate: 2026-07-01        # queimou e foi substituido
+#
+#   - dispositivo: camara-de-vacuo-02
+#     canal: 0
+#     ponto: curtimento.mancal.temperatura   # MESMO ponto: a serie continua
+#     grandeza: temperatura
+#     unidade: Cel
+#     vigente_de: 2026-07-01
+#
+# Duas formas de data sao aceitas, e a diferenca importa:
+#
+#     2026-07-01                  — dia, interpretado como meia-noite UTC
+#     2026-07-01T14:30:00-03:00   — instante exato, com fuso declarado
+#
+# A forma simples e ambigua por natureza: "trocamos no dia 1" quer dizer horario
+# LOCAL, e a planta esta em UTC-3 — meia-noite UTC e 21h do dia anterior aqui. Para
+# troca de sensor isso e aceitavel, porque e evento de manutencao e nao de segundo.
+# Onde o instante importar, use a forma completa.
+#
+# O gateway RECUSA vigencias que se cruzam: duas configuracoes valendo ao mesmo
+# tempo para o mesmo canal fariam a interpretacao do dado depender de qual delas o
+# codigo encontrasse primeiro.
 
 # Grandezas aceitas vem do contrato de fio e sao listadas pelo proprio gateway:
 #
