@@ -3,9 +3,9 @@
 # Gerado por 'make manifesto'. Reproduzivel: a mesma arvore produz o
 # mesmo resultado em qualquer maquina.
 #
-# commit:  3eb70d4f80c630ee05d1548983c137e515031c0a
-# arvore:  18 arquivo(s) com alteracao nao commitada
-# gerado:  2026-08-27T19:37:39Z
+# commit:  50c3350615c4371256c7e029cd0c02131d316d3a
+# arvore:  7 arquivo(s) com alteracao nao commitada
+# gerado:  2026-08-27T20:24:57Z
 #
 # ATENCAO: 'gerado' e a data desta execucao e NAO prova nada sozinha —
 # a data do sistema e ajustavel. O que ancora a data e o registro
@@ -13,11 +13,12 @@
 
 706e6d484ea816dd6961354167b990a484b54b7ad969e20fc5b51c273717301f  .gitignore
 b8d64263676ed4388311c41295c5b471a6db4e65a49b44cac252977fff0931e0  .golangci.yml
-0927ca4d62d26abddae31172ccdb665780ca13e8f8846cdbcc7a15f78faccf59  Makefile
-5b4c2bb2b357d735eb52d3972501dd9d00f7569105bba55ed0ff38c4c1ad3e87  README.md
+27dba1bafbd86fe645f13c00a461a31defa96994187d74570b73b9193c53c087  Makefile
+eabb77a9d049e3c757dc831cf9d1d0d84bda69619af84ed50820eb3b0ca678d8  README.md
 9e270dccb40d6517d3ff1126d2312f6c66f6b833814b4cfcfe55d8f91f727a51  configuracao/instalacao.exemplo.yaml
 1a291fa122d5f13e31672c1566a5ae804d9089e0e7e9baaa9c74997fb4375d72  contrato/proto/synkacore/contrato/v1/aquisicao.proto
 3b8175701b672dbff9a5201ba29b7a5f3807e8bfb3c3fa3cd0d5c143b8ed68b3  docker-compose.yml
+643bf786fae372ac04166fd1fc629623e78d85e9d8b10433c0a2eb8fa44cf5c1  docs/NO-EMBARCADO.md
 9ea1a789154fd16f1519ddd7c84c7eb1cd71dbce9fb61dc6ecfa5466aa49d456  docs/PROPRIEDADE-INTELECTUAL.md
 0418e67b244b33ab92198f7cdde1b8710e010a3a139cada2865eb3eb0628eeff  docs/QUALIDADE.md
 8d40ef068a39809974bf4337b6cf7fac5d296f1490ccc49612aa209231ad8770  docs/TRADE-OFFS.md
@@ -27,6 +28,8 @@ a6b9c5977fcc0c668b24e9709407438c358c4f2a8767e18734c47b89d3229658  docs/V1.2.md
 9faa41a5121687502eb1860e8c1d81548004a34a108034902f1f0d8cb381385e  docs/V2.0.md
 209a00f0eacf4cc5d3408276b347cd8a3ecdff8f79c291233a2441f89c1ab286  docs/V2.2.md
 42a1c5c5860e0437c49043e58c472e138e22c832f93400e2b82b13fe599e9cc8  docs/VISAO-GERAL.md
+037139116b9c16155a95296ab029628c247901d2080200ea536845720bcc1cec  ferramentas/geradordenopython/main.go
+8b36b8ea69be7b5455b578172ca7327090b97a9c5342debd39a4f81a3f530070  ferramentas/geradordenopython/preambulo.go
 f97846c57107361b699cec1fa0a302e5456b9440680da9f08328e6663c1e6ff1  go.mod
 a813acf10052cd77383cd49b4ba53558859d34ce4d4ce0d5ea6106fe5eb6a255  go.sum
 b668601c530f60c3b8f4d705ea316f1d40ee047fba43295e1c376701e459c3e6  implantacao/grafana/datasources/timescaledb.yaml
@@ -52,6 +55,7 @@ e9c65978cbd87fe2e2c964015baf66e7ad81fd1b65606b3f1ca85574ff0932bd  internal/adapt
 4620b9cf8c746dc37d3c0e899d81fb78bbad51c6fc4cb554bc5cda760b30cc45  internal/aplicacao/ingestao/servico_test.go
 f35fca32bc9a07b5ed60c796c3c6d8b7fdc19d82d0c8a9db150e449ae60ff3cd  internal/aplicacao/projecao/enriquecimento_test.go
 99b459d9381125412e8d7309050f1218dd2ed6868e9dfc646dae1a91832ad9ec  internal/aplicacao/projecao/servico.go
+46c2f84cd6f2cb914ea2e0477b0d29df5b4ebc512f9d1d0e7e9511804a1d3e8d  internal/contrato/fidelidade/fidelidade_test.go
 57d74ee53620ba53a078ff3376fc1515a2ccf4a5c826282888f054ada1a06373  internal/contrato/v1/aquisicao.pb.go
 94b588b516c9850cdd1e2d8cb633b9738796b99193ac87f3bfb2ff7100fa5894  internal/dominio/aquisicao/catalogodeconteudo.go
 728572433c2b38ea81f77c92f3cb42ba62c211df79608ae134763d6f38e06fee  internal/dominio/aquisicao/chavedeidempotencia.go
@@ -152,6 +156,10 @@ f644e2665f7b1c8e7099ad6aa9cf7ba756348d579a06588ac0fae6d0a120fac4  legado/java-v1
 859bcc9373d561b318b7d2266c948990a71244a110f5e169e380a163b3818f78  legado/java-v1.2/synkacore-infrastructure/src/test/java/com/synka/core/infrastructure/simulation/VacuumChamberSimulatorTest.java
 e22b6001a78ff769101baffb7b93cd65a4cc94cdd8ba840809054c54b6ed5917  migracoes/0001_modelo_de_leitura.sql
 764617c37ef3242caf8d89862e8298d64cd4d0d6d19c10e6144d4c299c1dfcdc  migracoes/0002_ponto_de_medicao.sql
+d353c79e98c6370439a9aa20314c3aa36a52edcb043fa1d1723d029e856c4acb  no-micropython/README.md
+ca3fc9f34c12a1f5a3a1fabde1cf4eea471ba2031a893be846f582bcddacf764  no-micropython/__pycache__/synkacore_contrato.cpython-314.pyc
+fb16db66fe75a1551a5e1afd9ac0d1e2f435c116de119bdaadf95a6510535cdf  no-micropython/main.py
+dbf5e4ab3d45e588d8ae817825fa0e8fa8f2d7a5799849a3263338918fbca886  no-micropython/synkacore_contrato.py
 
 # HASH RAIZ (sha256 sobre a lista de hashes acima):
-# a5968eb1cc26a56e971703746794563033badc782b6a34e810baf5d871b5558c
+# eb3eb319a63c9886aedfb444af973fc63990a59dfa670a64129feb4f24d351c6

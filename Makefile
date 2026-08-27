@@ -44,7 +44,7 @@ limpar:
 
 # verificar e o portao completo. Tudo que roda aqui derruba o build ao falhar.
 .PHONY: verificar
-verificar: formatar-conferir vet testar linter contrato-conferir
+verificar: formatar-conferir vet testar linter contrato-conferir no-micropython-conferir
 
 .PHONY: testar
 testar:
@@ -139,6 +139,34 @@ gateway-completo: compilar
 .PHONY: no
 no: compilar
 	./$(BINARIOS)/synkacore-no
+
+# ---------------------------------------------------------------- no micropython
+
+# no-micropython regera o codificador protobuf do no a partir do contrato.
+#
+# O gerado E VERSIONADO, como o do gateway: o ESP32 recebe o arquivo por cabo, e
+# quem o copia nao tem Go instalado.
+.PHONY: no-micropython
+no-micropython:
+	go run ./ferramentas/geradordenopython -saida no-micropython/synkacore_contrato.py
+	@echo "gerado em no-micropython/synkacore_contrato.py"
+
+# no-micropython-conferir reprova o build se o codificador do no estiver
+# desatualizado em relacao ao .proto.
+#
+# Sem esta trava, alguem edita o contrato, esquece de regerar, e o no passa a falar
+# uma versao que o gateway nao espera — divergencia que so aparece com o ESP32 em
+# campo. O teste de fidelidade compara os BYTES; esta conferencia garante que os
+# bytes comparados vem do contrato atual.
+.PHONY: no-micropython-conferir
+no-micropython-conferir:
+	@cp no-micropython/synkacore_contrato.py /tmp/synkacore-no-anterior.py
+	@$(MAKE) --no-print-directory no-micropython >/dev/null
+	@if ! diff -q /tmp/synkacore-no-anterior.py no-micropython/synkacore_contrato.py >/dev/null; then \
+		echo "o codificador do no esta desatualizado: rode 'make no-micropython' e versione o resultado"; \
+		exit 1; \
+	fi; \
+	echo "codificador do no em dia"
 
 # ---------------------------------------------------------------- proveniencia
 

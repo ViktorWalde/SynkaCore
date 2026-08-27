@@ -77,15 +77,28 @@ lacunas de amostragem: NENHUMA
 
 ---
 
-## Sem hardware físico
+## Duas origens, o mesmo contrato
 
-O `synkacore-no` é um processo separado que simula uma **câmara de vácuo de curtimento** —
-temperatura, pressão, estado de máquina e contagem de peças, em ciclo realista de 3 minutos
-— e fala com o gateway pelo **mesmo contrato de fio** que um equipamento embarcado usaria.
+O gateway não sabe o que existe do outro lado do fio — só o contrato. Hoje há duas
+implementações de nó, e o gateway não distingue as duas:
 
-O gateway não tem como saber a diferença. Serialização, lote, contrapressão, retransmissão,
-idempotência e ancoragem de tempo são todos exercitados de verdade, e trocar o simulador por
-hardware real deixa de ser uma integração: passa a ser uma troca de quem gera os números.
+| Nó | O que é |
+|---|---|
+| [`internal/no`](internal/no/) (Go) | Simula uma **câmara de vácuo de curtimento** — temperatura, pressão, estado de máquina e contagem, em ciclo de 3 minutos. Roda sem hardware nenhum. |
+| [`no-micropython/`](no-micropython/) | **ESP32 com DHT11 real**, medindo temperatura e umidade do ar. |
+
+Serialização, lote, contrapressão, retransmissão, idempotência e ancoragem de tempo são
+exercitados de verdade nos dois. Trocar simulação por hardware deixa de ser uma
+integração: passa a ser uma troca de quem gera os números.
+
+O codificador protobuf do nó MicroPython é **gerado do `.proto`**, e
+[`internal/contrato/fidelidade`](internal/contrato/fidelidade/) compara **byte a byte** o
+que o Python e o Go produzem para a mesma mensagem. Sem esse teste o gerador seria uma
+esperança: protobuf não carrega nomes de campo, e um número de tag trocado vira outro
+campo em silêncio.
+
+O firmware de produção será **C++ restrito sobre ESP-IDF** — decisão registrada em
+[`docs/NO-EMBARCADO.md`](docs/NO-EMBARCADO.md), com o gatilho e as travas. Não está ativa.
 
 ---
 
@@ -285,6 +298,7 @@ SynkaCore/
 make verificar    # formatação, vet, testes com -race, linter, contrato em dia
 make compilar     # binários estáticos, sem cgo
 make contrato     # regera o Go a partir do .proto
+make no-micropython  # regera o codificador do nó a partir do .proto
 make cobertura    # relatório de cobertura em HTML
 ```
 
@@ -309,6 +323,8 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 - **[Qualidade](docs/QUALIDADE.md)** — os portões do build.
 - **[Propriedade intelectual](docs/PROPRIEDADE-INTELECTUAL.md)** — anterioridade, manifesto
   criptográfico e o caminho do registro no INPI.
+- **[Nó embarcado](docs/NO-EMBARCADO.md)** — por que C++ restrito e não C, o subconjunto,
+  e as travas que o tornam aceitável.
 - **Histórico V1.x** — [V1.0](docs/V1.0.md) · [V1.1](docs/V1.1.md) · [V1.2](docs/V1.2.md),
   com o código em [`legado/java-v1.2/`](legado/java-v1.2/).
 
