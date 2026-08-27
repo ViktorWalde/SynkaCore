@@ -17,7 +17,10 @@
 // injetada a partir da raiz de composicao; nenhum package de dominio a importa.
 package relogio
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Relogio fornece as duas leituras de tempo do sistema.
 type Relogio interface {
@@ -59,7 +62,13 @@ func (r *relogioDoSistema) Decorrido() time.Duration { return time.Since(r.parti
 // Existe para que o degrau de relogio — que e difícil de provocar de verdade e
 // impossivel de provocar em integracao continua — seja exercitavel: basta mover
 // a parede sem mover o monotonico, que e precisamente o que um acerto de hora faz.
+// PROTEGIDO POR MUTEX, e isso nao e zelo excessivo. Este duble existe para testar
+// componentes CONCORRENTES — o rastreador de estado, o servidor de tempo, o laco do
+// no. Neles, o teste move o relogio de uma goroutine enquanto o componente o le de
+// outra, e sem o bloqueio o detector de corrida acusa. Um duble que nao suporta o uso
+// para o qual ele existe seria inutil justamente onde importa.
 type Falso struct {
+	mutex      sync.Mutex
 	parede     time.Time
 	monotonico time.Duration
 }
@@ -70,13 +79,23 @@ func NovoFalso(parede time.Time) *Falso {
 }
 
 // Agora devolve o instante de parede corrente do relogio falso.
-func (f *Falso) Agora() time.Time { return f.parede }
+func (f *Falso) Agora() time.Time {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return f.parede
+}
 
 // Decorrido devolve o monotonico corrente do relogio falso.
-func (f *Falso) Decorrido() time.Duration { return f.monotonico }
+func (f *Falso) Decorrido() time.Duration {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return f.monotonico
+}
 
 // Avancar move as DUAS leituras juntas, que e o comportamento normal do tempo.
 func (f *Falso) Avancar(d time.Duration) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
 	f.parede = f.parede.Add(d)
 	f.monotonico += d
 }
@@ -87,5 +106,7 @@ func (f *Falso) Avancar(d time.Duration) {
 // Aceita duracao negativa de proposito: o relogio andando para TRAS e o caso
 // perigoso, porque produz dado plausivel e errado.
 func (f *Falso) DarDegrau(d time.Duration) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
 	f.parede = f.parede.Add(d)
 }

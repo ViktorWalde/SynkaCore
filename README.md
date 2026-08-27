@@ -160,11 +160,16 @@ Grafana em `http://localhost:3000` (`admin`/`admin`), com a fonte de dados já p
 
 Dois servidores, em interfaces separadas, porque o gateway fica entre duas redes.
 
-**Ingresso — lado de chão de fábrica** (`127.0.0.1:8443`)
+**Ingresso — lado de chão de fábrica** (`127.0.0.1:8443`), com mTLS
 
 | Endpoint | Descrição |
 |---|---|
 | `POST /ingestao` | Recebe uma remessa protobuf; devolve a confirmação com a faixa durável |
+
+Com credencial configurada, o certificado de cliente é **exigido** e a identidade que
+a remessa reivindica é confrontada com a que o certificado prova. Divergência é
+recusada com `403`. O gateway também serve tempo por UDP, para que origens sem
+relógio de bateria consigam validar o certificado dele.
 
 **Apresentação — lado de escritório** (`127.0.0.1:8080`), somente leitura
 
@@ -231,6 +236,7 @@ Documentar "não duplique" não sustenta nada. Cada item abaixo é uma trava rea
 
 | Invariante | Trava |
 |---|---|
+| **Identidade provada, não afirmada** | O `id_do_dispositivo` da remessa é confrontado com o nome comum do certificado que o TLS validou. Sem isso, um dispositivo com credencial legítima pode gravar dado sob a identidade do vizinho — e o resultado é plausível, indetectável depois. |
 | **Um ponto de validação por conceito** | `NovoEnvelope` é o único construtor de mensagem. Campos não exportados ⇒ possuir um `Envelope` é prova de que ele é válido. Não existe "validar de novo por segurança". |
 | **Interface nomeada em vez de asserção anônima** | `TestConteudoEnderecadoCasaComOContrato` lê o descritor e exige que conteúdo com campo `endereco` implemente `ConteudoEnderecado`, e vice-versa. Nasceu de um defeito real: uma asserção para interface anônima que nunca casava, deixando o enriquecimento inteiro como código morto. |
 | **Um catálogo que recusa duplicata na inicialização** | `NovoCatalogoDeConteudo` rejeita tipo repetido. Dois arquivos definindo o mesmo tipo derrubam o gateway **no boot**, não em produção. |
@@ -318,6 +324,9 @@ isso vale mais que qualquer vantagem de velocidade bruta.
   encontrado no caminho.
 - **[V2.2](docs/V2.2.md)** — configuração da instalação: como o dado ganha significado, e a
   rede de proteção que denuncia canal trocado no painel.
+- **[V2.1](docs/V2.1.md)** — mTLS com CA interna, identidade autenticada contra
+  reivindicada, e o servidor de tempo que torna a validação possível numa origem sem
+  relógio.
 - **[Visão geral visual](docs/VISAO-GERAL.md)** — diagramas de fluxo e cenários de queda.
 - **[Trade-offs](docs/TRADE-OFFS.md)** — decisões técnicas e seus custos.
 - **[Qualidade](docs/QUALIDADE.md)** — os portões do build.
@@ -340,5 +349,5 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 | V1.3–V1.5 | ❌ Canceladas | Exigiam hardware físico — ver [V2.0](docs/V2.0.md) |
 | **V2.0** | 🚧 Em desenvolvimento | Reescrita em Go, contrato de fio, durabilidade estrutural, nó em software |
 | **V2.2** | 🚧 Em desenvolvimento | Configuração da instalação: canal → ponto de medição, catálogo de motivos, comissionamento |
-| V2.1 | 🔜 Planejada | mTLS com CA interna; identidade autenticada vs. reivindicada |
+| **V2.1** | 🚧 Em desenvolvimento | mTLS com CA interna, identidade autenticada vs. reivindicada, servidor de tempo |
 | V2.3 | 🔜 Planejada | Dashboards do Grafana como código; teste de carga |

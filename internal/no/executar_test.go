@@ -250,3 +250,92 @@ func TestReentregaAposQuedaNaoPerdeNemInverteAOrdem(t *testing.T) {
 			recebidas[0])
 	}
 }
+
+// transportadorQueRecusa devolve sempre a mesma categoria de falha.
+//
+// Existe para exercitar as tres respostas do no a recusa — descartar, manter e
+// gritar, manter e recuar — sem depender de um gateway de verdade que produza cada
+// uma delas.
+type transportadorQueRecusa struct {
+	mutex      sync.Mutex
+	erro       error
+	tentativas int
+}
+
+func (t *transportadorQueRecusa) Despachar(context.Context,
+	*contratov1.Remessa) (*contratov1.ConfirmacaoDeRemessa, error) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	t.tentativas++
+	return nil, t.erro
+}
+
+func (t *transportadorQueRecusa) contarTentativas() int {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	return t.tentativas
+}
+
+// TestRecusaDefinitivaDescartaOLote protege o buffer contra dado condenado.
+//
+// Uma remessa que o gateway nunca vai aceitar precisa SAIR do buffer. Mante-la
+// faria a origem retransmitir para sempre, e o buffer encheria de dado condenado —
+// empurrando dado bom para fora pela politica de saturacao.
+func TestRecusaDefinitivaDescartaOLote(t *testing.T) {
+	configuracao := configuracaoDeTeste()
+	transportador := &transportadorQueRecusa{
+		erro: falha.Nova(falha.CategoriaEntradaInvalida, "teste", "conteudo nunca sera aceito"),
+	}
+
+	origem := no.NovoNo(configuracao, simulacao.NovaCamaraDeVacuo(rand.New(rand.NewPCG(1, 2))),
+		transportador, relogio.Sistema(), rand.New(rand.NewPCG(3, 4)), registroSilencioso())
+
+	ctx, cancelar := context.WithCancel(t.Context())
+	concluido := make(chan struct{})
+	go func() {
+		defer close(concluido)
+		_ = origem.Executar(ctx)
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+	cancelar()
+	<-concluido
+
+	// O no continuou tentando com lotes NOVOS, e nao remoendo o mesmo: cada
+	// tentativa descarta o lote recusado e o proximo carrega amostras diferentes.
+	if tentativas := transportador.contarTentativas(); tentativas < 2 {
+		t.Errorf("tentativas = %d; a origem deveria seguir despachando lotes novos", tentativas)
+	}
+}
+
+// TestIdentidadeRecusadaMantemODado cobre o caso em que o dado e bom e a
+// configuracao e que esta errada.
+//
+// Recusa de identidade significa que o dispositivo esta mal configurado — o
+// identificador reivindicado nao bate com o certificado. Descartar seria errado: o
+// dado volta a ser aceito assim que alguem corrigir a configuracao.
+func TestIdentidadeRecusadaMantemODado(t *testing.T) {
+	configuracao := configuracaoDeTeste()
+	transportador := &transportadorQueRecusa{
+		erro: falha.Nova(falha.CategoriaPermissaoNegada, "teste", "identidade recusada"),
+	}
+
+	origem := no.NovoNo(configuracao, simulacao.NovaCamaraDeVacuo(rand.New(rand.NewPCG(1, 2))),
+		transportador, relogio.Sistema(), rand.New(rand.NewPCG(3, 4)), registroSilencioso())
+
+	ctx, cancelar := context.WithCancel(t.Context())
+	concluido := make(chan struct{})
+	go func() {
+		defer close(concluido)
+		_ = origem.Executar(ctx)
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+	cancelar()
+	<-concluido
+
+	// Tentou de novo — o problema e corrigivel, entao insistir faz sentido.
+	if tentativas := transportador.contarTentativas(); tentativas < 2 {
+		t.Errorf("tentativas = %d; identidade recusada deveria continuar sendo tentada", tentativas)
+	}
+}

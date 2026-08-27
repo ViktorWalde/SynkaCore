@@ -424,29 +424,66 @@ func (n *No) despachar(ctx context.Context) bool {
 	return true
 }
 
-// tratarFalhaDeDespacho devolve o lote ao buffer e recua.
+// tratarFalhaDeDespacho decide o destino do lote conforme a natureza da falha.
 //
-// O lote SEMPRE volta ao buffer, inclusive quando o gateway respondeu 4xx sobre a
-// remessa inteira — porque nesse caso o que foi recusado foi o envelope da remessa,
-// nao o conteudo, e a origem nao tem como saber qual envelope ofendeu. Descartar
-// tudo por causa de uma recusa que pode ter sido de um so seria perder dado bom.
+// TRES respostas diferentes, e confundi-las custa caro nos dois sentidos: tratar o
+// permanente como retentavel faz a origem tentar para sempre e nunca avancar; tratar
+// o transitorio como permanente joga fora dado bom por causa de um problema alheio.
+//
+//	EntradaInvalida   — a remessa nunca sera aceita. DESCARTA, porque retransmitir
+//	                    nao adianta e o buffer encheria de dado condenado,
+//	                    empurrando dado bom para fora.
+//	PermissaoNegada   — identidade recusada. MANTEM e grita: o dado e bom e volta a
+//	                    ser aceito quando alguem corrigir a configuracao, mas o
+//	                    problema nao se resolve sozinho.
+//	demais            — falha transitoria. MANTEM e recua.
 func (n *No) tratarFalhaDeDespacho(ctx context.Context, envelopes []*contratov1.Envelope, err error) {
+	switch falha.CategoriaDe(err) {
+	// Sem clausula default: o linter exhaustive cobra uma decisao para toda
+	// categoria nova. Uma categoria que caisse no padrao herdaria um comportamento
+	// que ninguem escolheu para ela — e aqui a escolha errada custa dado.
+	case falha.CategoriaEntradaInvalida:
+		n.registro.Error("o gateway recusou a remessa definitivamente; os envelopes foram descartados",
+			slog.Int("envelopes", len(envelopes)),
+			slog.String("erro", err.Error()))
+
+	// Credencial recusada e identidade recusada recebem o MESMO tratamento, e a
+	// razao e a mesma nos dois: o dado e bom, quem esta errado e a configuracao, e
+	// ela e corrigivel. Descartar perderia dado por um problema que se resolve
+	// editando um arquivo ou reemitindo um certificado.
+	case falha.CategoriaPermissaoNegada, falha.CategoriaNaoAutenticado:
+		// Registrado a CADA tentativa, e nao so nas tres primeiras como as demais
+		// falhas. Configuracao errada nao se resolve esperando, e um aviso que some
+		// depois de tres linhas seria perdido justamente no caso em que alguem
+		// precisa agir.
+		n.registro.Error("CREDENCIAL OU IDENTIDADE RECUSADA pelo gateway; o dado permanece no buffer",
+			slog.String("id_do_dispositivo", n.configuracao.IDDoDispositivo),
+			slog.String("categoria", falha.CategoriaDe(err).String()),
+			slog.String("erro", err.Error()))
+		n.devolverERecuar(ctx, envelopes)
+
+	// Todas transitorias, por motivos diferentes: o gateway caiu, esta saturado, tem
+	// um defeito, ou respondeu algo que nao deveria. Em nenhuma delas o dado esta
+	// errado — o que falhou foi a entrega, e entrega se tenta de novo.
+	//
+	// EntregaDuplicada nunca deveria chegar aqui como erro (o gateway a trata como
+	// sucesso), e RestritaPorLicenca nunca pode originar do caminho de aquisicao.
+	// Ambas caem no comportamento conservador: preservar o dado.
+	case falha.CategoriaIndisponivel, falha.CategoriaRecursoEsgotado,
+		falha.CategoriaInterna, falha.CategoriaNaoEncontrado,
+		falha.CategoriaEntregaDuplicada, falha.CategoriaRestritaPorLicenca:
+		n.devolverERecuar(ctx, envelopes)
+		n.registrarFalhaTransitoria(err)
+	}
+}
+
+// devolverERecuar recoloca o lote no buffer e espera antes da proxima tentativa.
+func (n *No) devolverERecuar(ctx context.Context, envelopes []*contratov1.Envelope) {
 	n.buffer.Devolver(envelopes, ClassesDe(envelopes))
 
 	espera := EsperaDeRecuo(n.tentativasSeguidas, n.configuracao.RecuoBase,
 		n.configuracao.RecuoTeto, fracaoDeJitterDoRecuo, n.gerador.Float64)
 	n.tentativasSeguidas++
-
-	// Registrado uma vez a cada transicao para nao inundar o disco durante uma
-	// queda longa: as primeiras tentativas informam, e da terceira em diante o log
-	// so repetiria a mesma linha.
-	if n.tentativasSeguidas <= 3 {
-		n.registro.Warn("despacho falhou; a origem vai retransmitir",
-			slog.String("categoria", falha.CategoriaDe(err).String()),
-			slog.String("erro", err.Error()),
-			slog.Duration("recuo", espera),
-			slog.Int("bufferizados", n.buffer.Ocupacao()))
-	}
 
 	// A espera respeita o cancelamento: um desligamento durante o recuo nao pode
 	// ficar preso ate o temporizador vencer.
@@ -456,6 +493,21 @@ func (n *No) tratarFalhaDeDespacho(ctx context.Context, envelopes []*contratov1.
 	case <-ctx.Done():
 	case <-temporizador.C:
 	}
+}
+
+// registrarFalhaTransitoria avisa nas primeiras tentativas e cala depois.
+//
+// Uma queda longa produziria milhares de linhas identicas, e o disco de um
+// equipamento que ninguem visita e finito. As primeiras informam; da terceira em
+// diante o log so repetiria.
+func (n *No) registrarFalhaTransitoria(err error) {
+	if n.tentativasSeguidas > 3 {
+		return
+	}
+	n.registro.Warn("despacho falhou; a origem vai retransmitir",
+		slog.String("categoria", falha.CategoriaDe(err).String()),
+		slog.String("erro", err.Error()),
+		slog.Int("bufferizados", n.buffer.Ocupacao()))
 }
 
 // tempoLimiteDoDesligamento e quanto a origem espera para entregar o que sobrou.

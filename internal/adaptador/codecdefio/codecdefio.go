@@ -65,6 +65,15 @@ func resolverOneofDeConteudo() protoreflect.OneofDescriptor {
 type RemessaDecodificada struct {
 	IDDaInstalacao string
 
+	// IDDoDispositivoReivindicado e o que a remessa AFIRMA ser.
+	//
+	// Exposto separado dos envelopes de proposito: a confrontacao com a identidade
+	// que o transporte provou precisa acontecer mesmo quando TODOS os envelopes
+	// foram rejeitados. Sem este campo, uma remessa inteiramente malformada
+	// escaparia da conferencia de identidade — e um atacante aprenderia rapido que
+	// basta mandar lixo para nao ser conferido.
+	IDDoDispositivoReivindicado string
+
 	// Envelopes sao os validos, na ordem em que chegaram.
 	Envelopes []aquisicao.Envelope
 
@@ -111,8 +120,9 @@ func DecodificarRemessa(bruto []byte, instanteObservado time.Time,
 	}
 
 	decodificada := RemessaDecodificada{
-		IDDaInstalacao: remessa.GetIdDaInstalacao(),
-		Envelopes:      make([]aquisicao.Envelope, 0, len(envelopesDoFio)),
+		IDDaInstalacao:              remessa.GetIdDaInstalacao(),
+		IDDoDispositivoReivindicado: remessa.GetIdDoDispositivo(),
+		Envelopes:                   make([]aquisicao.Envelope, 0, len(envelopesDoFio)),
 	}
 
 	for _, envelopeDoFio := range envelopesDoFio {

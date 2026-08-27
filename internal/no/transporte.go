@@ -3,6 +3,7 @@ package no
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"io"
 	"net/http"
 	"strconv"
@@ -51,9 +52,19 @@ type TransportadorHTTP struct {
 // gateway que aceita a conexao e nunca responde seguraria a origem
 // indefinidamente, e ela pararia de amostrar. Uma origem que trava esperando o
 // gateway e pior que uma origem que acumula no buffer.
-func NovoTransportadorHTTP(destino string, tempoLimite time.Duration) *TransportadorHTTP {
+//
+// configuracaoTLS nula deixa a conexao em texto claro. Ligada, ela carrega a
+// credencial desta origem e a CA da instalacao — e o no passa a AUTENTICAR o
+// gateway alem de se autenticar: sem isso, ele entregaria dado a qualquer um que
+// atendesse naquele endereco.
+func NovoTransportadorHTTP(destino string, tempoLimite time.Duration,
+	configuracaoTLS *tls.Config) *TransportadorHTTP {
+
+	transporte := http.DefaultTransport.(*http.Transport).Clone()
+	transporte.TLSClientConfig = configuracaoTLS
+
 	return &TransportadorHTTP{
-		cliente: &http.Client{Timeout: tempoLimite},
+		cliente: &http.Client{Timeout: tempoLimite, Transport: transporte},
 		destino: destino,
 	}
 }
@@ -102,6 +113,20 @@ func (t *TransportadorHTTP) Despachar(ctx context.Context,
 	if resposta.StatusCode >= http.StatusInternalServerError {
 		return nil, falha.Nova(falha.CategoriaIndisponivel, operacaoDespachar,
 			"gateway respondeu "+strconv.Itoa(resposta.StatusCode)+": retransmitir")
+	}
+	// 403 e recusa de IDENTIDADE, e merece categoria propria.
+	//
+	// Ela significa que este dispositivo esta mal configurado — o identificador que
+	// ele reivindica nao e o que o certificado prova. NENHUMA remessa dele sera
+	// aceita ate alguem corrigir a configuracao.
+	//
+	// Descartar seria errado: o dado e bom, e volta a ser aceito assim que o
+	// identificador for corrigido. Retentar em silencio tambem seria errado: o
+	// problema nao se resolve sozinho, e o operador precisa ver.
+	if resposta.StatusCode == http.StatusForbidden {
+		return nil, falha.Nova(falha.CategoriaPermissaoNegada, operacaoDespachar,
+			"o gateway recusou a identidade desta origem: o identificador reivindicado nao "+
+				"corresponde ao certificado. Corrija a configuracao do dispositivo")
 	}
 	if resposta.StatusCode >= http.StatusBadRequest {
 		return nil, falha.Nova(falha.CategoriaEntradaInvalida, operacaoDespachar,

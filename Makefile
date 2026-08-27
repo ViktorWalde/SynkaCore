@@ -35,6 +35,7 @@ tudo: verificar compilar
 compilar:
 	$(CGO_PARA_BINARIO) go build -trimpath -ldflags='-s -w' -o $(BINARIOS)/synkacore-gateway ./cmd/synkacore-gateway
 	$(CGO_PARA_BINARIO) go build -trimpath -ldflags='-s -w' -o $(BINARIOS)/synkacore-no ./cmd/synkacore-no
+	$(CGO_PARA_BINARIO) go build -trimpath -ldflags='-s -w' -o $(BINARIOS)/synkacore-credencial ./cmd/synkacore-credencial
 
 .PHONY: limpar
 limpar:

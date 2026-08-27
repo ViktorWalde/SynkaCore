@@ -37,6 +37,7 @@ import machine
 import network
 import dht
 import socket
+import ssl
 
 import synkacore_contrato as contrato
 
@@ -51,6 +52,35 @@ REDE_SENHA = "AJUSTE"
 GATEWAY_HOST = "192.168.0.100"
 GATEWAY_PORTA = 8443
 GATEWAY_CAMINHO = "/ingestao"
+
+# ---------------------------------------------------------------------------
+# CREDENCIAIS
+# ---------------------------------------------------------------------------
+#
+# Emitidas pelo `synkacore-credencial` e copiadas para a flash do no:
+#
+#     synkacore-credencial dispositivo -pasta cred -id esp32-sala-01
+#
+# Vazios deixam a conexao em TEXTO CLARO — util para o primeiro contato, e so em
+# rede controlada. Com eles, o no se autentica E autentica o gateway.
+#
+# O nome comum do certificado PRECISA ser igual a ID_DO_DISPOSITIVO. O gateway
+# confronta os dois e recusa a remessa com 403 se divergirem: um dispositivo com
+# credencial legitima nao pode falar pelo identificador de outro.
+CAMINHO_DA_CA = "ca.crt"
+CAMINHO_DO_CERTIFICADO = "dispositivo.crt"
+CAMINHO_DA_CHAVE = "dispositivo.key"
+
+# Servidor de tempo do gateway.
+#
+# Necessario porque a validacao de certificado compara a validade com o instante
+# atual, e o ESP32 nasce em 1970 — a documentacao do MicroPython diz que
+# `CERT_REQUIRED` exige data e hora corretas.
+#
+# Este e o UNICO uso de relogio de parede no no, e ele nao contamina o dado: as
+# amostras continuam carregando apenas `ticks_ms()`, e o gateway continua sendo a
+# autoridade de tempo. Sao dois usos distintos do relogio.
+SERVIDOR_DE_TEMPO = GATEWAY_HOST
 
 ID_DA_INSTALACAO = "planta-piloto"
 
@@ -110,8 +140,23 @@ def sortear_sessao_de_boot():
     return "boot-" + "".join("%02x" % urandom.getrandbits(8) for _ in range(8))
 
 
+class RecusaDefinitiva(Exception):
+    """A remessa nunca sera aceita. Retransmitir nao adianta."""
+
+
+class IdentidadeRecusada(Exception):
+    """O gateway recusou a identidade deste no.
+
+    Separada de RecusaDefinitiva de proposito: o dado e BOM. O que esta errado e a
+    configuracao — o identificador reivindicado nao bate com o certificado. Ele volta
+    a ser aceito assim que alguem corrigir, entao descartar seria perder dado por um
+    problema que se resolve editando um arquivo.
+    """
+
+
 class No:
-    def __init__(self):
+    def __init__(self, contexto_tls=None):
+        self.contexto_tls = contexto_tls
         self.sessao_de_boot = sortear_sessao_de_boot()
         self.sensor = dht.DHT11(machine.Pin(PINO_DO_DHT11))
         self.sequencia = 0
@@ -258,6 +303,20 @@ class No:
 
         try:
             confirmacao = self.enviar(corpo)
+        except RecusaDefinitiva as erro:
+            # SAI do buffer: retransmitir nao adianta, e mante-lo encheria o buffer
+            # de dado condenado, empurrando dado bom para fora.
+            print("ERRO: remessa recusada definitivamente; descartando", len(lote), "envelopes:", erro)
+            self.buffer = self.buffer[len(lote):]
+            return False
+        except IdentidadeRecusada as erro:
+            # PERMANECE no buffer: o dado e bom e volta a ser aceito assim que
+            # alguem corrigir a configuracao. Gritado a cada tentativa, e nao so
+            # nas primeiras — isso nao se resolve esperando.
+            print("ERRO: IDENTIDADE RECUSADA:", erro)
+            self.tentativas_seguidas += 1
+            time.sleep_ms(self.recuo_ms())
+            return False
         except OSError as erro:
             # O lote PERMANECE no buffer. So sai depois de confirmado — e essa e a
             # propriedade que garante que nada se perde quando o gateway cai.
@@ -293,16 +352,11 @@ class No:
         return espera + urandom.getrandbits(8) * espera // 1024
 
     def enviar(self, corpo):
-        """POST do lote, em HTTP puro.
-
-        TEXTO CLARO POR ENQUANTO, e isto e uma divida declarada, nao um esquecimento.
-        A V2.1 troca por mTLS com CA interna: o MicroPython suporta
-        `ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)` com `load_cert_chain`, entao a troca
-        e de transporte, nao de desenho. Ate la, este no so deve rodar em rede
-        controlada.
+        """POST do lote, sobre TLS quando ha credencial.
 
         Requisicao montada a mao, sem urequests: e uma requisicao so, com corpo
-        binario e cabecalho fixo — a biblioteca custaria memoria para nada.
+        binario e cabecalho fixo — a biblioteca custaria memoria para nada, e memoria
+        e o recurso que falta durante o handshake.
         """
         endereco = socket.getaddrinfo(GATEWAY_HOST, GATEWAY_PORTA)[0][-1]
         conexao = socket.socket()
@@ -310,6 +364,15 @@ class No:
 
         try:
             conexao.connect(endereco)
+
+            if self.contexto_tls is not None:
+                # server_hostname precisa casar com o SAN do certificado do gateway.
+                # E o que transforma "certificado assinado pela CA certa" em
+                # "certificado DESTE gateway": sem isso, qualquer dispositivo da
+                # instalacao poderia se passar por ele, porque todos tem certificado
+                # da mesma autoridade.
+                conexao = self.contexto_tls.wrap_socket(
+                    conexao, server_hostname=GATEWAY_HOST)
             cabecalho = (
                 "POST %s HTTP/1.1\r\n"
                 "Host: %s:%d\r\n"
@@ -335,13 +398,72 @@ class No:
             raise OSError("resposta sem corpo")
 
         linha_de_status = resposta[:resposta.find(b"\r\n")]
+
+        # TRES respostas diferentes, e confundi-las custa caro nos dois sentidos.
+        #
+        #   403 — identidade recusada. O identificador que este no reivindica nao
+        #         bate com o certificado dele. NENHUMA remessa sera aceita ate
+        #         alguem corrigir. O dado e bom: MANTEM no buffer e grita.
+        #   4xx — a remessa nunca sera aceita. DESCARTA, porque retransmitir nao
+        #         adianta e o buffer encheria de dado condenado.
+        #   5xx — falha do gateway. MANTEM e retransmite.
+        if b"403" in linha_de_status:
+            raise IdentidadeRecusada(
+                "o gateway recusou a identidade deste no: ID_DO_DISPOSITIVO nao "
+                "corresponde ao nome comum do certificado")
         if b"200" not in linha_de_status:
-            # 4xx manda DESCARTAR, 5xx manda RETRANSMITIR. Aqui os dois viram
-            # excecao e o lote fica no buffer; distingui-los e trabalho da V2.1,
-            # junto com o transporte.
+            if b" 4" in linha_de_status:
+                raise RecusaDefinitiva("gateway recusou: %s" % linha_de_status)
             raise OSError("gateway respondeu: %s" % linha_de_status)
 
         return contrato.decodificar_ConfirmacaoDeRemessa(resposta[separador + 4:])
+
+
+def sincronizar_relogio():
+    """Acerta o relogio a partir do gateway, para validar o certificado dele.
+
+    O ESP32 nao tem relogio com bateria: ao ligar, ele marca 1970, e todo certificado
+    pareceria "ainda nao valido". Sem acertar, a escolha seria entre nao validar o
+    gateway — aceitando qualquer impostor que atenda naquele endereco — ou nao
+    conseguir conectar.
+
+    O QUE ISSO NAO FAZ: nao autoriza o no a carimbar o dado. As amostras continuam
+    levando apenas tempo monotonico; o gateway continua ancorando. O relogio de
+    parede aqui serve a UMA finalidade, e ela e o TLS.
+
+    Falha nao derruba o no: sem TLS configurado, o relogio nem e necessario.
+    """
+    if not CAMINHO_DA_CA:
+        return
+
+    try:
+        import ntptime
+        ntptime.host = SERVIDOR_DE_TEMPO
+        ntptime.settime()
+        print("relogio acertado pelo gateway:", time.gmtime())
+    except Exception as erro:
+        # Dito alto: sem relogio, o handshake vai falhar com erro de validade que
+        # nao aponta para o relogio em lugar nenhum. Quem ler o log precisa saber.
+        print("AVISO: nao foi possivel acertar o relogio pelo gateway:", erro)
+        print("       o handshake TLS provavelmente falhara por validade de certificado")
+
+
+def montar_contexto_tls():
+    """Monta o contexto TLS do no, ou None para texto claro.
+
+    O no autentica o gateway alem de se autenticar. Sem `CERT_REQUIRED` e sem carregar
+    a CA da instalacao, ele entregaria dado a qualquer um que atendesse naquele
+    endereco — e a credencial dele serviria so para provar identidade a um impostor.
+    """
+    if not (CAMINHO_DA_CA and CAMINHO_DO_CERTIFICADO and CAMINHO_DA_CHAVE):
+        print("AVISO: sem credencial; a conexao vai em texto claro e o gateway nao e autenticado")
+        return None
+
+    contexto = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    contexto.verify_mode = ssl.CERT_REQUIRED
+    contexto.load_verify_locations(cafile=CAMINHO_DA_CA)
+    contexto.load_cert_chain(CAMINHO_DO_CERTIFICADO, CAMINHO_DA_CHAVE)
+    return contexto
 
 
 def conectar_rede():
@@ -360,7 +482,12 @@ def conectar_rede():
 
 def executar():
     conectar_rede()
-    no = No()
+
+    # A ORDEM IMPORTA: relogio antes do TLS. O contexto so e util depois de o
+    # relogio estar acertado, porque a validacao do certificado compara a validade
+    # com o instante atual.
+    sincronizar_relogio()
+    no = No(montar_contexto_tls())
     print("no iniciando; sessao de boot:", no.sessao_de_boot)
 
     no.emitir_descritor()

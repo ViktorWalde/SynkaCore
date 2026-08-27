@@ -20,6 +20,7 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/aplicacao/ingestao"
 	contratov1 "github.com/ViktorWalde/SynkaCore/internal/contrato/v1"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
+	"github.com/ViktorWalde/SynkaCore/internal/plataforma/credencial"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/falha"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
 )
@@ -58,12 +59,30 @@ type Ingresso struct {
 	catalogo *aquisicao.CatalogoDeConteudo
 	relogio  relogio.Relogio
 	registro *slog.Logger
+
+	// exigirIdentidadeAutenticada liga a confrontacao entre a identidade que a
+	// remessa reivindica e a que o certificado prova.
+	//
+	// Desligada quando o ingresso roda sem TLS. Isso NAO e tolerancia frouxa: sem
+	// TLS nao existe identidade provada para confrontar, e fingir que existe seria
+	// pior que admitir que nao ha. O que o gateway faz nesse caso e AVISAR, alto e
+	// na partida, que esta operando sem autenticacao.
+	exigirIdentidadeAutenticada bool
 }
 
 // NovoIngresso constroi o adaptador.
 func NovoIngresso(servico *ingestao.Servico, catalogo *aquisicao.CatalogoDeConteudo,
 	r relogio.Relogio, registro *slog.Logger) *Ingresso {
 	return &Ingresso{servico: servico, catalogo: catalogo, relogio: r, registro: registro}
+}
+
+// ComIdentidadeAutenticada liga a confrontacao de identidade.
+//
+// Chamado pela raiz de composicao quando o ingresso sobe em TLS com certificado de
+// cliente exigido.
+func (i *Ingresso) ComIdentidadeAutenticada(exigir bool) *Ingresso {
+	i.exigirIdentidadeAutenticada = exigir
+	return i
 }
 
 // Rotas devolve o multiplexador com o caminho de aquisicao montado.
@@ -103,6 +122,20 @@ func (i *Ingresso) receberRemessa(escritor http.ResponseWriter, requisicao *http
 		return
 	}
 
+	// A CONFRONTACAO DE IDENTIDADE ACONTECE AQUI, e nao no codec.
+	//
+	// Quem prova identidade e o transporte, e so este adaptador tem acesso a
+	// credencial. Fazer a conferencia dentro do codec exigiria passar a identidade
+	// autenticada para dentro dele — espalhando decisao de seguranca por uma camada
+	// que nao deveria tomar nenhuma.
+	//
+	// E acontece ANTES da ingestao: uma remessa que reivindica identidade alheia nao
+	// pode chegar ao diario nem por um instante.
+	if err := i.conferirIdentidade(requisicao, decodificada.IDDoDispositivoReivindicado); err != nil {
+		i.responderFalha(escritor, err)
+		return
+	}
+
 	for indice, motivo := range decodificada.MotivosDaRejeicao {
 		i.registro.Warn("envelope rejeitado definitivamente",
 			slog.Uint64("numero_de_sequencia", decodificada.SequenciasRejeitadas[indice]),
@@ -126,6 +159,34 @@ func (i *Ingresso) receberRemessa(escritor http.ResponseWriter, requisicao *http
 	}
 
 	i.responderConfirmacao(escritor, confirmacao)
+}
+
+// conferirIdentidade confronta o que a remessa reivindica com o que o TLS provou.
+//
+// Sem TLS, nao ha o que confrontar e a funcao passa. Isso e registrado uma vez na
+// partida do gateway, e nao a cada remessa: um aviso por mensagem inundaria o log e
+// deixaria de ser lido justamente por ser constante.
+func (i *Ingresso) conferirIdentidade(requisicao *http.Request, reivindicada string) error {
+	if !i.exigirIdentidadeAutenticada {
+		return nil
+	}
+
+	autenticada, err := credencial.IdentidadeAutenticada(requisicao.TLS)
+	if err != nil {
+		return err
+	}
+
+	if err := credencial.ConferirIdentidade(autenticada, reivindicada); err != nil {
+		// Registrado como ERRO, e nao como aviso. Isto e ou um defeito de
+		// configuracao — dois nos com o mesmo certificado, ou o identificador
+		// trocado no arquivo do no — ou uma tentativa de se passar por outro
+		// dispositivo. Nenhum dos dois e ruido operacional.
+		i.registro.Error("identidade reivindicada nao confere com a autenticada",
+			slog.String("autenticada", autenticada.String()),
+			slog.String("reivindicada", reivindicada))
+		return err
+	}
+	return nil
 }
 
 // responderConfirmacao devolve a confirmacao no formato do contrato.
