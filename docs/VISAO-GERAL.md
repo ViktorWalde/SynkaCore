@@ -185,16 +185,53 @@ consulta.
 Por isso o `/saude` reporta os dois estágios separados:
 
 ```json
-{"journal":"available","projection":"degraded", ...}
+{"journal":"available","projection":"degraded","ingestion":"accepting", ...}
 ```
 
 | Linha | Se falhar significa | Acorda alguém? |
 |---|---|---|
 | `journal` | O sistema está perdendo a capacidade de **aceitar** dado | Sim |
 | `projection` | O dado está salvo; os dashboards estão atrasados | Não |
+| `ingestion` | O gateway está cheio; as origens estão bufferizando | Não — mas dimensione |
 
-Juntar as duas num único `healthy` faria o operador tratar uma queda do TimescaleDB como
-emergência de aquisição.
+Juntar as três num único `healthy` faria o operador tratar uma queda do TimescaleDB como
+emergência de aquisição, e uma saturação passageira como as duas.
+
+---
+
+## O que acontece quando o gateway enche
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AM as Amostra
+    participant EV as Evento discreto
+    participant POR as Portaria
+    participant DIA as Diário
+
+    Note over POR: a fila passou do orçamento<br/>da amostra, e não do evento
+
+    AM->>POR: remessa
+    POR--xAM: 429 + Retry-After medido
+    AM->>AM: devolve ao buffer e recua
+
+    EV->>POR: remessa
+    POR->>POR: entra na fila e ESPERA
+    POR->>DIA: grava
+    DIA-->>EV: confirmado
+```
+
+As duas encontram a **mesma fila** e recebem respostas opostas, e a diferença não está
+no tamanho nem na ordem de chegada.
+
+- A amostra **prefere ser recusada** a esperar: a próxima repõe quase a mesma
+  informação, e ocupar a fila com ela atrasa o que não tem substituto.
+- O evento discreto **prefere esperar** a ser recusado: ele não tem vizinho que o
+  reponha.
+
+É a mesma regra que o buffer da origem já aplicava — sacrificar a amostra antes do
+evento —, agora na porta de entrada do gateway. Recusar não perde dado: o lote volta ao
+buffer e é retransmitido. Ver [V2.4](V2.4.md).
 
 ---
 
@@ -280,6 +317,8 @@ make no
 ## Para se aprofundar
 
 - **[V2.0](V2.0.md)** — a reescrita: por que foi antecipada e o que foi encontrado no caminho.
+- **[V2.4](V2.4.md)** — contrapressão explícita: o gateway diz que está cheio, com uma
+  espera que ele mediu.
 - **[Trade-offs](TRADE-OFFS.md)** — decisões e seus custos.
 - **[Qualidade](QUALIDADE.md)** — os portões do build.
 - **Histórico V1.x** — [V1.0](V1.0.md) · [V1.1](V1.1.md) · [V1.2](V1.2.md).

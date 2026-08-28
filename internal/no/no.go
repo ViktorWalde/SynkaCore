@@ -460,7 +460,7 @@ func (n *No) tratarFalhaDeDespacho(ctx context.Context, envelopes []*contratov1.
 			slog.String("id_do_dispositivo", n.configuracao.IDDoDispositivo),
 			slog.String("categoria", falha.CategoriaDe(err).String()),
 			slog.String("erro", err.Error()))
-		n.devolverERecuar(ctx, envelopes)
+		n.devolverERecuar(ctx, envelopes, err)
 
 	// Todas transitorias, por motivos diferentes: o gateway caiu, esta saturado, tem
 	// um defeito, ou respondeu algo que nao deveria. Em nenhuma delas o dado esta
@@ -472,17 +472,16 @@ func (n *No) tratarFalhaDeDespacho(ctx context.Context, envelopes []*contratov1.
 	case falha.CategoriaIndisponivel, falha.CategoriaRecursoEsgotado,
 		falha.CategoriaInterna, falha.CategoriaNaoEncontrado,
 		falha.CategoriaEntregaDuplicada, falha.CategoriaRestritaPorLicenca:
-		n.devolverERecuar(ctx, envelopes)
+		n.devolverERecuar(ctx, envelopes, err)
 		n.registrarFalhaTransitoria(err)
 	}
 }
 
 // devolverERecuar recoloca o lote no buffer e espera antes da proxima tentativa.
-func (n *No) devolverERecuar(ctx context.Context, envelopes []*contratov1.Envelope) {
+func (n *No) devolverERecuar(ctx context.Context, envelopes []*contratov1.Envelope, err error) {
 	n.buffer.Devolver(envelopes, ClassesDe(envelopes))
 
-	espera := EsperaDeRecuo(n.tentativasSeguidas, n.configuracao.RecuoBase,
-		n.configuracao.RecuoTeto, fracaoDeJitterDoRecuo, n.gerador.Float64)
+	espera := n.esperaAntesDaProximaTentativa(err)
 	n.tentativasSeguidas++
 
 	// A espera respeita o cancelamento: um desligamento durante o recuo nao pode
@@ -493,6 +492,40 @@ func (n *No) devolverERecuar(ctx context.Context, envelopes []*contratov1.Envelo
 	case <-ctx.Done():
 	case <-temporizador.C:
 	}
+}
+
+// esperaAntesDaProximaTentativa escolhe entre o que o gateway MEDIU e o que a
+// origem adivinha.
+//
+// Recuo exponencial existe porque quem recua nao tem informacao nenhuma: a origem
+// nao sabe se o gateway caiu, se a rede sumiu ou se ele esta apenas cheio, entao
+// dobra a espera ate acertar. Quando o gateway responde 429 com Retry-After, essa
+// ignorancia acaba — ele mediu quanto tempo a fila leva para drenar, e preferir um
+// palpite a uma medicao seria trocar informacao por ritual.
+//
+// DUAS TRAVAS sobre o numero recebido, e as duas importam:
+//
+//   - O TETO da origem continua valendo. Um gateway defeituoso que pedisse uma hora
+//     calaria a frota inteira por uma hora, e a origem so descobriria o engano
+//     quando o buffer estourasse. A origem obedece, mas nao ate o ponto de parar de
+//     verificar.
+//   - O JITTER e da origem, e nao do gateway. O gateway manda o mesmo numero para
+//     todas as origens; sem espalhar, elas voltariam juntas e o pico sincronizado
+//     derrubaria de vez um gateway que estava apenas saturado.
+func (n *No) esperaAntesDaProximaTentativa(err error) time.Duration {
+	pedida, gatewayPediu := EsperaSolicitada(err)
+	if !gatewayPediu {
+		return EsperaDeRecuo(n.tentativasSeguidas, n.configuracao.RecuoBase,
+			n.configuracao.RecuoTeto, fracaoDeJitterDoRecuo, n.gerador.Float64)
+	}
+
+	if pedida > n.configuracao.RecuoTeto {
+		n.registro.Warn("o gateway pediu uma espera acima do teto desta origem; aplicado o teto",
+			slog.Duration("pedida", pedida),
+			slog.Duration("aplicada", n.configuracao.RecuoTeto))
+		pedida = n.configuracao.RecuoTeto
+	}
+	return ComJitter(pedida, fracaoDeJitterDoRecuo, n.gerador.Float64)
 }
 
 // registrarFalhaTransitoria avisa nas primeiras tentativas e cala depois.

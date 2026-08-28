@@ -31,6 +31,7 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/estadooperacional"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/instalacao"
+	"github.com/ViktorWalde/SynkaCore/internal/plataforma/contrapressao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
 )
 
@@ -78,6 +79,14 @@ type Apresentacao struct {
 	// configuracao e a instalacao, ou nil quando nenhuma foi carregada.
 	configuracao *instalacao.Instalacao
 
+	// portaria e a admissao do caminho de aquisicao, observada apenas para leitura.
+	//
+	// A apresentacao NAO admite nem recusa nada — ela e o lado de escritorio, e a
+	// regra de que nada daqui alcanca o caminho de aquisicao continua valendo. O que
+	// ela faz e RELATAR: sem isto, a saturacao existiria, atuaria e nao apareceria em
+	// lugar nenhum, que e o defeito que a V2.4 comeca corrigindo.
+	portaria *contrapressao.Portaria
+
 	// declaracoes guarda o ultimo descritor recebido de cada dispositivo.
 	//
 	// Em memoria, e nao no diario, de proposito: e um instantaneo do que as origens
@@ -104,6 +113,16 @@ func NovaApresentacao(diario *diariosqlite.Diario, catalogo *aquisicao.CatalogoD
 		diario: diario, catalogo: catalogo, rastreador: rastreador, relogio: r, registro: registro,
 		declaracoes: novoRegistroDeDeclaracoes(),
 	}
+}
+
+// ComContrapressao liga o relato de admissao no health check.
+//
+// Nula, o /saude reporta "unknown" em vez de "accepting". A escolha e deliberada:
+// um campo ausente pareceria ausencia de saturacao, e "unknown" denuncia a propria
+// composicao incompleta em vez de afirmar uma saude que ninguem verificou.
+func (a *Apresentacao) ComContrapressao(portaria *contrapressao.Portaria) *Apresentacao {
+	a.portaria = portaria
+	return a
 }
 
 // ComInstalacao liga o relatorio de comissionamento.
@@ -135,7 +154,37 @@ type respostaDeSaude struct {
 	Journal         string `json:"journal"`
 	Projection      string `json:"projection"`
 	ProjectionSince string `json:"projection_since"`
-	CheckedAt       string `json:"checked_at"`
+
+	// Ingestion diz se o gateway esta aceitando remessa de amostra AGORA.
+	//
+	// Terceira linha independente, pela mesma razao que separou journal de
+	// projection: ela tem um destinatario e uma resposta operacional diferentes. As
+	// tres respondem coisas distintas, e junta-las produziria um "healthy" que
+	// esconde justamente o que decide se alguem age.
+	//
+	//	journal    — o sistema esta perdendo a capacidade de ACEITAR dado
+	//	projection — o dado esta salvo; os dashboards estao atrasados
+	//	ingestion  — o gateway esta cheio; as origens estao bufferizando
+	Ingestion string `json:"ingestion"`
+
+	// IngestionQueue e quantas remessas aguardam admissao.
+	IngestionQueue int `json:"ingestion_queue"`
+
+	// IngestionWaitMs e a espera estimada que o gateway devolve no Retry-After.
+	IngestionWaitMs int64 `json:"ingestion_wait_ms"`
+
+	// IngestionShedSamples e IngestionShedEvents contam as recusas SEPARADAS, e a
+	// separacao e a informacao.
+	//
+	// Amostra recusada e a politica funcionando: o gateway esta sacrificando o que
+	// tem substituto para proteger o que nao tem. Evento discreto recusado e o teto
+	// real sendo ultrapassado — o gateway ficou cheio a ponto de dizer nao ao que
+	// nenhuma amostra seguinte repoe. Somadas num unico contador, a segunda
+	// desapareceria dentro da primeira, que sobe todo dia sem significar nada.
+	IngestionShedSamples uint64 `json:"ingestion_shed_samples"`
+	IngestionShedEvents  uint64 `json:"ingestion_shed_events"`
+
+	CheckedAt string `json:"checked_at"`
 }
 
 // responderSaude verifica o diario DE VERDADE antes de responder.
@@ -164,8 +213,10 @@ func (a *Apresentacao) responderSaude(escritor http.ResponseWriter, requisicao *
 		Journal:         "available",
 		Projection:      projecao,
 		ProjectionSince: desde.Format(time.RFC3339),
+		Ingestion:       "unknown",
 		CheckedAt:       a.relogio.Agora().Format(time.RFC3339),
 	}
+	a.relatarAdmissao(&resposta)
 
 	status := http.StatusOK
 	if err := a.diario.Verificar(requisicao.Context()); err != nil {
@@ -176,6 +227,35 @@ func (a *Apresentacao) responderSaude(escritor http.ResponseWriter, requisicao *
 	}
 
 	a.responderJSON(escritor, status, resposta)
+}
+
+// relatarAdmissao preenche as linhas de contrapressao do health check.
+//
+// SATURACAO NAO ALTERA O STATUS HTTP, e este e o ponto da funcao. Ela devolve 200
+// mesmo com o gateway recusando remessa, porque contrapressao e o sistema
+// FUNCIONANDO COMO PROJETADO: as origens bufferizam, retransmitem e nada se perde.
+//
+// Devolver 503 aqui faria um balanceador tirar do ar o gateway que esta apenas
+// cheio, e o efeito seria empurrar a carga inteira para os outros — transformando
+// uma saturacao parcial em queda total, que e exatamente o modo de falha que o
+// jitter do recuo existe para evitar do outro lado.
+//
+// O que muda o status continua sendo uma coisa so: o diario nao responder.
+func (a *Apresentacao) relatarAdmissao(resposta *respostaDeSaude) {
+	if a.portaria == nil {
+		return
+	}
+
+	estado := a.portaria.Estado()
+
+	resposta.Ingestion = "shedding"
+	if estado.Admitindo {
+		resposta.Ingestion = "accepting"
+	}
+	resposta.IngestionQueue = estado.Aguardando
+	resposta.IngestionWaitMs = estado.EsperaEstimada.Milliseconds()
+	resposta.IngestionShedSamples = estado.RecusadasComuns
+	resposta.IngestionShedEvents = estado.RecusadasReservadas
 }
 
 // leituraProjetada e um registro do diario na forma em que a consulta o devolve.

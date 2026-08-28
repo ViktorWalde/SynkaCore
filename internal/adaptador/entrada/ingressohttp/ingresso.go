@@ -20,6 +20,7 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/aplicacao/ingestao"
 	contratov1 "github.com/ViktorWalde/SynkaCore/internal/contrato/v1"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
+	"github.com/ViktorWalde/SynkaCore/internal/plataforma/contrapressao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/credencial"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/falha"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
@@ -43,13 +44,6 @@ const (
 	// a planta mandando bytes para sempre.
 	TamanhoMaximoDoCorpo = 4 << 20 // 4 MiB
 
-	// EsperaDeContrapressaoPadrao acompanha o 429.
-	//
-	// A origem soma JITTER a este valor. Sem jitter, as origens sincronizam e a
-	// frota inteira reconecta junta — a falha parcial vira total, e o gateway que
-	// estava apenas lento cai de vez.
-	EsperaDeContrapressaoPadrao = 2 * time.Second
-
 	operacaoIngresso = "ingressohttp.Ingestao"
 )
 
@@ -57,6 +51,7 @@ const (
 type Ingresso struct {
 	servico  *ingestao.Servico
 	catalogo *aquisicao.CatalogoDeConteudo
+	portaria *contrapressao.Portaria
 	relogio  relogio.Relogio
 	registro *slog.Logger
 
@@ -71,9 +66,17 @@ type Ingresso struct {
 }
 
 // NovoIngresso constroi o adaptador.
+//
+// A portaria e parametro OBRIGATORIO, e nao um ajuste opcional encaixado depois
+// por um metodo `Com...`. A distincao e a mesma que separa o diario de um buffer
+// de emergencia: um mecanismo que so entra em acao quando alguem lembrou de
+// liga-lo e um mecanismo que nao funciona. Ate a V2.3 o gateway tinha o mapeador
+// de 429 pronto e nada que o acionasse — a contrapressao existia no papel, e a
+// unica coisa que faltava era exatamente este parametro nao ser esquecivel.
 func NovoIngresso(servico *ingestao.Servico, catalogo *aquisicao.CatalogoDeConteudo,
-	r relogio.Relogio, registro *slog.Logger) *Ingresso {
-	return &Ingresso{servico: servico, catalogo: catalogo, relogio: r, registro: registro}
+	portaria *contrapressao.Portaria, r relogio.Relogio, registro *slog.Logger) *Ingresso {
+	return &Ingresso{servico: servico, catalogo: catalogo, portaria: portaria,
+		relogio: r, registro: registro}
 }
 
 // ComIdentidadeAutenticada liga a confrontacao de identidade.
@@ -141,6 +144,28 @@ func (i *Ingresso) receberRemessa(escritor http.ResponseWriter, requisicao *http
 			slog.Uint64("numero_de_sequencia", decodificada.SequenciasRejeitadas[indice]),
 			slog.String("motivo", motivo.Error()))
 	}
+
+	// A ADMISSAO ACONTECE AQUI: depois de decodificar, antes de gravar.
+	//
+	// Depois de decodificar porque a decisao depende da CLASSE do que veio, e a
+	// classe so existe depois da decodificacao. Recusar antes seria recusar no
+	// escuro, tratando uma parada de maquina como uma leitura de temperatura.
+	//
+	// O custo dessa ordem foi medido na V2.3 e e o argumento que a sustenta:
+	// decodificar e validar custa 1,9 us por envelope, e gravar custa 33 us. Uma
+	// remessa recusada joga fora ~190 us de decodificacao para evitar ~3,3 ms de
+	// gravacao numa fila que ja nao da conta — dezessete vezes mais barato que
+	// admiti-la.
+	//
+	// E antes de gravar porque recusar depois nao seria contrapressao: seria
+	// pagar o congestionamento inteiro e ainda assim nao entregar o dado.
+	passagem, err := i.portaria.Entrar(requisicao.Context(),
+		urgenciaDaRemessa(decodificada.Envelopes))
+	if err != nil {
+		i.responderFalha(escritor, err)
+		return
+	}
+	defer passagem.Sair()
 
 	confirmacao, err := i.servico.Ingerir(requisicao.Context(),
 		decodificada.Envelopes, decodificada.SequenciasRejeitadas)
@@ -236,12 +261,33 @@ func (i *Ingresso) responderFalha(escritor http.ResponseWriter, err error) {
 	}
 
 	if categoria == falha.CategoriaRecursoEsgotado {
-		escritor.Header().Set("Retry-After",
-			strconv.Itoa(int(EsperaDeContrapressaoPadrao.Seconds())))
+		escritor.Header().Set("Retry-After", segundosDeEspera(i.portaria.EsperaSugerida()))
 	}
 	escritor.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	escritor.WriteHeader(status)
 	if _, err := escritor.Write([]byte(categoria.String())); err != nil {
 		i.registro.Debug("resposta de falha nao chegou ao chamador")
 	}
+}
+
+// segundosDeEspera formata a espera para o cabecalho Retry-After.
+//
+// ARREDONDA PARA CIMA, e nunca devolve zero. Retry-After tem resolucao de
+// segundos, e uma estimativa de 300 ms truncada viraria "0" — a origem voltaria na
+// hora, o recuo deixaria de recuar exatamente quando ele existe para atuar, e o
+// gateway saturado receberia a mesma carga de volta imediatamente.
+//
+// O jitter NAO e aplicado aqui, de proposito. Ele pertence a origem: o gateway
+// manda o mesmo numero para a frota inteira, e se ele proprio o espalhasse, todas
+// as origens ainda assim receberiam valores sorteados da mesma distribuicao no
+// mesmo instante. Quem precisa se dessincronizar e quem vai voltar.
+func segundosDeEspera(espera time.Duration) string {
+	segundos := int(espera / time.Second)
+	if espera%time.Second > 0 {
+		segundos++
+	}
+	if segundos < 1 {
+		segundos = 1
+	}
+	return strconv.Itoa(segundos)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -107,8 +108,12 @@ func (t *TransportadorHTTP) Despachar(ctx context.Context,
 	defer func() { _ = resposta.Body.Close() }()
 
 	if resposta.StatusCode == http.StatusTooManyRequests {
-		return nil, falha.Nova(falha.CategoriaRecursoEsgotado, operacaoDespachar,
-			"gateway saturado: aguardar "+resposta.Header.Get("Retry-After")+"s")
+		espera := esperaSolicitada(resposta.Header.Get("Retry-After"))
+		return nil, &Contrapressao{
+			espera: espera,
+			causa: falha.Nova(falha.CategoriaRecursoEsgotado, operacaoDespachar,
+				"gateway saturado: ele pediu "+espera.String()),
+		}
 	}
 	if resposta.StatusCode >= http.StatusInternalServerError {
 		return nil, falha.Nova(falha.CategoriaIndisponivel, operacaoDespachar,
@@ -168,13 +173,79 @@ func EsperaDeRecuo(tentativa int, base, teto time.Duration, fracaoDeJitter float
 			break
 		}
 	}
+	return ComJitter(espera, fracaoDeJitter, sortear)
+}
 
-	// O jitter e simetrico em torno da espera calculada: sortear() devolve [0,1),
-	// e o deslocamento vai de -fracao a +fracao.
+// ComJitter espalha uma espera em torno do valor calculado.
+//
+// Extraida para ser aplicada tambem a espera que o GATEWAY pede, e nao so ao recuo
+// exponencial. Ali ela e ainda mais necessaria: o gateway manda o mesmo numero para
+// a frota inteira, entao sem jitter todas as origens voltariam no mesmo instante e
+// o gateway que estava apenas saturado receberia um pico sincronizado.
+//
+// O deslocamento e simetrico: sortear() devolve [0,1), e o resultado vai de
+// -fracao a +fracao em torno da espera.
+func ComJitter(espera time.Duration, fracaoDeJitter float64, sortear func() float64) time.Duration {
 	deslocamento := (sortear()*2 - 1) * fracaoDeJitter
-	comJitter := time.Duration(float64(espera) * (1 + deslocamento))
-	if comJitter < 0 {
+	espalhada := time.Duration(float64(espera) * (1 + deslocamento))
+	if espalhada < 0 {
 		return 0
 	}
-	return comJitter
+	return espalhada
+}
+
+// Contrapressao e a recusa por saturacao, carregando a espera que o gateway MEDIU.
+//
+// Tipo proprio, e nao apenas uma falha classificada, porque aqui ha um DADO a
+// transportar alem da categoria — e falha.Erro nao carrega dado por escolha: a
+// taxonomia responde "o que fazer", nunca "com qual parametro". Envolver a falha
+// em vez de estende-la mantem falha.CategoriaDe funcionando por errors.As, e
+// portanto mantem a taxonomia unica sendo unica.
+type Contrapressao struct {
+	espera time.Duration
+	causa  error
+}
+
+// Error implementa a interface error. O nome e imposto pela linguagem.
+func (c *Contrapressao) Error() string { return c.causa.Error() }
+
+// Unwrap expoe a falha classificada para errors.Is, errors.As e falha.CategoriaDe.
+func (c *Contrapressao) Unwrap() error { return c.causa }
+
+// Espera devolve quanto o gateway pediu que a origem aguardasse.
+func (c *Contrapressao) Espera() time.Duration { return c.espera }
+
+// EsperaSolicitada devolve a espera pedida pelo gateway, se houver alguma.
+//
+// Ausencia e um resultado legitimo, e nao um erro: um gateway mais antigo, ou um
+// intermediario que corta cabecalhos, produz 429 sem Retry-After. Nesse caso a
+// origem volta ao recuo exponencial — adivinhar e pior que saber, e melhor que
+// nao recuar.
+func EsperaSolicitada(err error) (time.Duration, bool) {
+	var contrapressao *Contrapressao
+	if errors.As(err, &contrapressao) && contrapressao.espera > 0 {
+		return contrapressao.espera, true
+	}
+	return 0, false
+}
+
+// esperaSolicitada interpreta o cabecalho Retry-After.
+//
+// SO A FORMA EM SEGUNDOS. O HTTP admite tambem uma data absoluta, e ignora-la aqui
+// nao e simplificacao: uma origem sem relogio de bateria nasce em 1970 e nao tem
+// como interpretar "espere ate quinta-feira, 14h32". E a mesma limitacao que
+// obrigou o gateway a servir tempo por UDP na V2.1, e ela vale aqui pelo mesmo
+// motivo — um numero de segundos e a unica forma que uma origem sem hora sabe ler.
+//
+// Valor ausente, ilegivel ou negativo devolve zero, e zero significa "o gateway
+// nao disse": a origem cai no recuo exponencial em vez de voltar imediatamente.
+func esperaSolicitada(cabecalho string) time.Duration {
+	if cabecalho == "" {
+		return 0
+	}
+	segundos, err := strconv.Atoi(cabecalho)
+	if err != nil || segundos <= 0 {
+		return 0
+	}
+	return time.Duration(segundos) * time.Second
 }

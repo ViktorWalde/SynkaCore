@@ -1,7 +1,22 @@
 # Binários compilados
+#
+# ANCORADOS NA RAIZ, com barra inicial. Sem ela, `synkacore-gateway` é um padrão
+# de NOME e casa com qualquer componente de caminho — inclusive o diretório
+# `cmd/synkacore-gateway/`. O efeito foi que as duas raízes de composição do
+# projeto ficaram fora do controle de versão sem nada acusar: `git status` não as
+# mostra como não rastreadas, porque estão ignoradas.
+#
+# As consequências eram duas, e a segunda é a séria:
+#
+#   - um clone limpo não compila, porque `cmd/synkacore-gateway/` não existe nele;
+#   - `make manifesto` monta a lista com `git ls-files`, então o hash raiz — o
+#     artefato que o registro no INPI consome — NÃO cobria o main.go do gateway
+#     nem o do nó. O manifesto fechava, e fechava sobre uma árvore incompleta.
+#
+# `/bin/` já cobre os binários que estas linhas queriam ignorar.
 /bin/
-synkacore-gateway
-synkacore-no
+/synkacore-gateway
+/synkacore-no
 
 # Estado local de execução — nunca versionado
 /diario/
@@ -18,6 +33,15 @@ cobertura.html
 # O código gerado do contrato (*.pb.go) É VERSIONADO de propósito: o projeto
 # precisa compilar com `go build` puro, sem protoc instalado, numa planta sem
 # internet. Regerar é `make contrato`, e o diff entra na revisão.
+
+# Artefato de bytecode do Python.
+#
+# Ele era VERSIONADO por acidente, e o teste de fidelidade — que executa Python —
+# o reescrevia a cada `make verificar`. O resultado é que rodar os testes sujava
+# a árvore e mudava o hash raiz do manifesto, tornando `make manifesto-conferir`
+# uma pergunta cuja resposta dependia de quando alguém rodou o build.
+__pycache__/
+*.pyc
 
 # Ferramentas e editores
 .idea/

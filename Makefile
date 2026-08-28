@@ -169,10 +169,16 @@ medir:
 # Exige o gateway rodando: ele mede o caminho INTEIRO — serializacao, rede, contencao
 # no diario — e nao a chamada em processo, que deixaria de fora justamente os
 # candidatos a gargalo.
+# CLASSE decide qual ORCAMENTO DE ADMISSAO o gateway aplica a estas origens.
+#
+# Nao e enfeite do gerador: a portaria da V2.4 recusa amostra antes de recusar
+# evento discreto, e uma rodada so com amostra mede metade da politica. Rodar as
+# duas ao mesmo tempo, contra o mesmo gateway, e o que mostra a reserva atuando.
 .PHONY: carga
 carga: compilar
 	./$(BINARIOS)/synkacore-carga -origens $(or $(ORIGENS),50) -lote $(or $(LOTE),100) \
-		-intervalo $(or $(INTERVALO),1s) -duracao $(or $(DURACAO),30s)
+		-intervalo $(or $(INTERVALO),1s) -duracao $(or $(DURACAO),30s) \
+		-classe $(or $(CLASSE),amostra)
 
 # ---------------------------------------------------------------- no micropython
 

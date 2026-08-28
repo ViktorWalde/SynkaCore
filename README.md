@@ -84,8 +84,24 @@ Capacidade sob carga, contra disco real — a pergunta que estava aberta desde a
 | 10 | 950 | 25 ms | 51 ms |
 | 200 | **18.999** | 494 ms | 945 ms |
 
-Teto de **~20.000 envelopes/s** neste hardware. Acima disso nada quebra: a latência
-sobe e as origens bufferizam. Detalhes e o gargalo medido em [V2.3](docs/V2.3.md).
+Teto de **~20.000 envelopes/s** neste hardware. Detalhes e o gargalo medido em
+[V2.3](docs/V2.3.md).
+
+### E declarado, não inferido
+
+Acima do teto o gateway **diz** que está cheio, em vez de deixar a origem descobrir
+pelo tempo de resposta — e não recusa as duas classes de dado do mesmo jeito. As
+duas cargas abaixo rodaram ao mesmo tempo, contra o mesmo gateway, na mesma fila:
+
+| Carga simultânea | Envelopes/s | Recusadas com `429` |
+|---|---|---|
+| 400 origens de **amostra** | 18.869 | **1.537** |
+| 20 origens de **evento discreto** | 1.000 | **nenhuma** |
+
+Amostra prefere ser recusada a esperar, porque a próxima repõe quase a mesma
+informação. Evento discreto prefere esperar, porque não existe próximo que o
+reponha. A cauda de latência caiu junto: p99 de **5,6 s para 1,90 s**. Ver
+[V2.4](docs/V2.4.md).
 
 ---
 
@@ -197,11 +213,14 @@ O `/saude` reporta os dois estágios **separados**, e a distinção decide se al
 acordado:
 
 ```json
-{"journal":"available","projection":"degraded","projection_since":"...","checked_at":"..."}
+{"journal":"available","projection":"degraded","ingestion":"shedding",
+ "ingestion_queue":399,"ingestion_shed_samples":404,"ingestion_shed_events":0, ...}
 ```
 
 `journal` falhando significa que o sistema está perdendo a capacidade de aceitar dado.
 `projection` falhando significa que o dado está salvo e os dashboards estão atrasados.
+`ingestion` em `shedding` significa que o gateway está cheio e as origens estão
+bufferizando — não é falha, e por isso o status HTTP continua 200.
 
 ---
 
@@ -249,6 +268,7 @@ Documentar "não duplique" não sustenta nada. Cada item abaixo é uma trava rea
 | Invariante | Trava |
 |---|---|
 | **Identidade provada, não afirmada** | O `id_do_dispositivo` da remessa é confrontado com o nome comum do certificado que o TLS validou. Sem isso, um dispositivo com credencial legítima pode gravar dado sob a identidade do vizinho — e o resultado é plausível, indetectável depois. |
+| **Saturação recusa amostra antes de evento** | A admissão dá orçamentos de espera diferentes por `ClasseDeDado`. Sem isso, contrapressão seria um limitador de taxa — e um limitador de taxa recusa uma parada de máquina com a mesma naturalidade com que recusa a milésima leitura de temperatura. |
 | **Um ponto de validação por conceito** | `NovoEnvelope` é o único construtor de mensagem. Campos não exportados ⇒ possuir um `Envelope` é prova de que ele é válido. Não existe "validar de novo por segurança". |
 | **Interface nomeada em vez de asserção anônima** | `TestConteudoEnderecadoCasaComOContrato` lê o descritor e exige que conteúdo com campo `endereco` implemente `ConteudoEnderecado`, e vice-versa. Nasceu de um defeito real: uma asserção para interface anônima que nunca casava, deixando o enriquecimento inteiro como código morto. |
 | **Um catálogo que recusa duplicata na inicialização** | `NovoCatalogoDeConteudo` rejeita tipo repetido. Dois arquivos definindo o mesmo tipo derrubam o gateway **no boot**, não em produção. |
@@ -320,6 +340,7 @@ make no-micropython  # regera o codificador do nó a partir do .proto
 make cobertura    # relatório de cobertura em HTML
 make medir        # benchmarks do diário contra disco real
 make carga        # gerador de carga contra um gateway no ar
+make carga CLASSE=evento  # a mesma carga como evento discreto, que tem outro orçamento
 ```
 
 `make verificar` é o portão completo — qualquer falha derruba o build. Disciplina imposta
@@ -343,6 +364,9 @@ isso vale mais que qualquer vantagem de velocidade bruta.
   relógio.
 - **[V2.3](docs/V2.3.md)** — capacidade medida, onde está o gargalo, e os painéis do
   Grafana como código.
+- **[V2.4](docs/V2.4.md)** — contrapressão explícita: o gateway passa a dizer que
+  está cheio, com uma espera que ele mediu, e recusa amostra antes de recusar
+  evento discreto.
 - **[Visão geral visual](docs/VISAO-GERAL.md)** — diagramas de fluxo e cenários de queda.
 - **[Trade-offs](docs/TRADE-OFFS.md)** — decisões técnicas e seus custos.
 - **[Qualidade](docs/QUALIDADE.md)** — os portões do build.
@@ -367,3 +391,4 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 | **V2.2** | 🚧 Em desenvolvimento | Configuração da instalação: canal → ponto de medição, catálogo de motivos, comissionamento |
 | **V2.1** | 🚧 Em desenvolvimento | mTLS com CA interna, identidade autenticada vs. reivindicada, servidor de tempo |
 | **V2.3** | 🚧 Em desenvolvimento | Capacidade medida, gargalo identificado, painéis do Grafana como código |
+| **V2.4** | 🚧 Em desenvolvimento | Contrapressão explícita: saturação declarada com `429`, `Retry-After` medido, e reserva por classe de dado |

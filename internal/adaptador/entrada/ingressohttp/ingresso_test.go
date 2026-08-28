@@ -17,6 +17,7 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/aplicacao/ingestao"
 	contratov1 "github.com/ViktorWalde/SynkaCore/internal/contrato/v1"
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
+	"github.com/ViktorWalde/SynkaCore/internal/plataforma/contrapressao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
 )
 
@@ -28,6 +29,30 @@ var instanteDeReferencia = time.Date(2026, time.August, 26, 14, 30, 0, 0, time.U
 // juntos, que e onde os defeitos de fronteira aparecem. Um duble no lugar do
 // diario testaria a nossa ideia dele em vez dele.
 func servidorDeTeste(t *testing.T) (*httptest.Server, *diariosqlite.Diario) {
+	t.Helper()
+	cenario := servidorComPortaria(t, contrapressao.AjustesPadrao())
+	return cenario.servidor, cenario.diario
+}
+
+// cenarioDeIngresso reune as pecas que os testes de contrapressao manipulam.
+//
+// Uma estrutura em vez de quatro valores de retorno: os dois ultimos so interessam
+// a quem exercita saturacao, e uma assinatura de quatro posicoes obrigaria todo
+// chamador a nomear campos que ele ignora.
+type cenarioDeIngresso struct {
+	servidor *httptest.Server
+	diario   *diariosqlite.Diario
+	portaria *contrapressao.Portaria
+	relogio  *relogio.Falso
+}
+
+// servidorComPortaria monta o mesmo caminho com uma portaria configuravel.
+//
+// Existe separado para que os testes de contrapressao possam saturar a admissao
+// sem saturar o disco de verdade. Os demais testes usam os padroes, e com eles a
+// portaria nunca recusa nada — o que trava a propriedade que interessa a eles: a
+// admissao NAO pode mudar o comportamento do caminho feliz.
+func servidorComPortaria(t *testing.T, ajustes contrapressao.Ajustes) cenarioDeIngresso {
 	t.Helper()
 
 	diario, err := diariosqlite.Abrir(t.Context(), filepath.Join(t.TempDir(), "diario.db"))
@@ -44,10 +69,12 @@ func servidorDeTeste(t *testing.T) (*httptest.Server, *diariosqlite.Diario) {
 	registro := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 	r := relogio.NovoFalso(instanteDeReferencia)
 	servico := ingestao.NovoServico(diario, r, "exec-teste")
+	portaria := contrapressao.NovaPortaria(ajustes, r.Decorrido)
 
-	servidor := httptest.NewServer(ingressohttp.NovoIngresso(servico, catalogo, r, registro).Rotas())
+	servidor := httptest.NewServer(
+		ingressohttp.NovoIngresso(servico, catalogo, portaria, r, registro).Rotas())
 	t.Cleanup(servidor.Close)
-	return servidor, diario
+	return cenarioDeIngresso{servidor: servidor, diario: diario, portaria: portaria, relogio: r}
 }
 
 func remessaSerializada(t *testing.T, envelopes ...*contratov1.Envelope) []byte {
@@ -85,7 +112,16 @@ func envelopeDeAmostra(sequencia uint64) *contratov1.Envelope {
 type respostaDoIngresso struct {
 	Status         int
 	TipoDeConteudo string
-	Corpo          []byte
+
+	// RetryAfter e o cabecalho que acompanha o 429, cru como a origem o le.
+	//
+	// Guardado como texto, e nao ja convertido: o que os testes de contrapressao
+	// precisam afirmar e o que sai no FIO, e uma conversao no helper esconderia
+	// justamente o caso que interessa — uma espera de milissegundos que virasse "0"
+	// e mandasse a origem voltar na hora.
+	RetryAfter string
+
+	Corpo []byte
 }
 
 func enviar(t *testing.T, servidor *httptest.Server, corpo []byte) respostaDoIngresso {
@@ -111,6 +147,7 @@ func enviar(t *testing.T, servidor *httptest.Server, corpo []byte) respostaDoIng
 	return respostaDoIngresso{
 		Status:         resposta.StatusCode,
 		TipoDeConteudo: resposta.Header.Get("Content-Type"),
+		RetryAfter:     resposta.Header.Get("Retry-After"),
 		Corpo:          lido,
 	}
 }
