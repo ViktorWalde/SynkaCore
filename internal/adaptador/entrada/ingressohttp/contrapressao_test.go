@@ -7,7 +7,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/ViktorWalde/SynkaCore/internal/adaptador/entrada/ingressohttp"
 	contratov1 "github.com/ViktorWalde/SynkaCore/internal/contrato/v1"
+	"github.com/ViktorWalde/SynkaCore/internal/dominio/instalacao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/contrapressao"
 )
 
@@ -261,4 +263,111 @@ func esperarNaFilaDoIngresso(t *testing.T, portaria *contrapressao.Portaria, esp
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("aguardando = %d, esperado %d", portaria.Estado().Aguardando, esperado)
+}
+
+// TestOsPadroesDosDoisLadosConcordam fecha a unica divergencia possivel entre o
+// dominio e a plataforma.
+//
+// Os mesmos numeros existem em dois lugares por necessidade: instalacao.AdmissaoPadrao
+// e a fonte autoritativa, porque a politica e uma afirmacao sobre o dado; e
+// contrapressao.AjustesPadrao existe para que aquele package seja exercitavel sozinho,
+// sem importar dominio.
+//
+// Dois conjuntos do mesmo valor divergem, e o que ninguem lembra de atualizar e
+// sempre o que esta mais longe do arquivo de configuracao. A garantia contra isso nao
+// e um comentario pedindo cuidado — e este teste, que reprova o build no dia em que
+// alguem mudar um lado só.
+func TestOsPadroesDosDoisLadosConcordam(t *testing.T) {
+	t.Parallel()
+
+	doDominio := ingressohttp.AjustesDaPortaria(instalacao.AdmissaoPadrao())
+	daPlataforma := contrapressao.AjustesPadrao()
+
+	if doDominio != daPlataforma {
+		t.Fatalf("os padroes divergiram:\n  dominio    = %+v\n  plataforma = %+v",
+			doDominio, daPlataforma)
+	}
+}
+
+// TestOrcamentoDaInstalacaoChegaAPortaria trava o caminho inteiro, do arquivo ate a
+// recusa.
+//
+// Nao basta o YAML ser lido: o numero precisa ATRAVESSAR o dominio, o tradutor e a
+// portaria, e mudar de fato o instante em que a amostra passa a ser recusada. Um
+// campo que carrega e nao surte efeito e pior que um campo que nao existe.
+func TestOrcamentoDaInstalacaoChegaAPortaria(t *testing.T) {
+	t.Parallel()
+
+	declarada := instalacao.Admissao{
+		OrcamentoDaAmostra:        800 * time.Millisecond,
+		OrcamentoDoEventoDiscreto: 4 * time.Second,
+		FilaMaxima:                256,
+	}
+
+	cenario := servidorComPortaria(t, ingressohttp.AjustesDaPortaria(declarada))
+
+	// Um segundo de custo medido: abaixo do orcamento padrao de 2 s — que aceitaria
+	// esta remessa — e acima dos 800 ms que a instalacao declarou.
+	medida, err := cenario.portaria.Entrar(t.Context(), contrapressao.UrgenciaComum)
+	if err != nil {
+		t.Fatalf("primeira admissao falhou: %v", err)
+	}
+	cenario.relogio.Avancar(time.Second)
+	medida.Sair()
+
+	ocupante, err := cenario.portaria.Entrar(t.Context(), contrapressao.UrgenciaComum)
+	if err != nil {
+		t.Fatalf("a vaga deveria ter sido liberada: %v", err)
+	}
+	defer ocupante.Sair()
+
+	resposta := enviar(t, cenario.servidor, remessaSerializada(t, envelopeDeAmostra(1)))
+	if resposta.Status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, esperado 429: a instalacao declarou 800ms e a espera "+
+			"estimada e de 1s", resposta.Status)
+	}
+}
+
+// TestSementeDaCalibracaoNaoSobrescreveMedicaoReal trava a ordem de autoridade.
+//
+// A semente e um PISO derivado de uma transacao vazia; a media movel vem de
+// gravacoes de verdade. Deixar a semente sobrescrever medicao real seria trocar o
+// numero bom pelo aproximado — e o momento em que isso aconteceria e justamente
+// depois de o gateway ja saber a resposta.
+func TestSementeDaCalibracaoNaoSobrescreveMedicaoReal(t *testing.T) {
+	t.Parallel()
+
+	cenario := servidorComPortaria(t, contrapressao.AjustesPadrao())
+
+	// Uma gravacao de verdade ensina 3 s.
+	medida, err := cenario.portaria.Entrar(t.Context(), contrapressao.UrgenciaComum)
+	if err != nil {
+		t.Fatalf("admissao falhou: %v", err)
+	}
+	cenario.relogio.Avancar(3 * time.Second)
+	medida.Sair()
+
+	cenario.portaria.Semear(time.Millisecond)
+
+	if custo := cenario.portaria.Estado().CustoMedio; custo != 3*time.Second {
+		t.Fatalf("custo medio = %v, esperado 3s: a semente sobrescreveu medicao real", custo)
+	}
+}
+
+// TestSementeValeQuandoNadaFoiMedidoAinda e o outro lado da mesma regra.
+func TestSementeValeQuandoNadaFoiMedidoAinda(t *testing.T) {
+	t.Parallel()
+
+	cenario := servidorComPortaria(t, contrapressao.AjustesPadrao())
+
+	cenario.portaria.Semear(7 * time.Millisecond)
+
+	if custo := cenario.portaria.Estado().CustoMedio; custo != 7*time.Millisecond {
+		t.Fatalf("custo medio = %v, esperado 7ms", custo)
+	}
+	// E semear duas vezes nao acumula: a segunda ja encontra medicao registrada.
+	cenario.portaria.Semear(99 * time.Millisecond)
+	if custo := cenario.portaria.Estado().CustoMedio; custo != 7*time.Millisecond {
+		t.Fatalf("custo medio = %v apos segunda semeadura, esperado 7ms", custo)
+	}
 }

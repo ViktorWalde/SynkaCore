@@ -89,6 +89,25 @@ const (
 	// cliente abre a conexao e envia o cabecalho byte a byte para segurar um
 	// handler indefinidamente.
 	tempoLimiteDeLeituraDoCabecalho = 10 * time.Second
+
+	// amostrasDaCalibracao e quantas transacoes a partida mede para semear a
+	// portaria.
+	//
+	// Vinte da mediana estavel sem atrasar a partida de forma perceptivel: mesmo a
+	// ~1 ms por transacao — o pior caso medido na V2.3, lote unitario em disco real
+	// — sao ~20 ms, contra os 15 s de tempo limite de desligamento do processo.
+	//
+	// Mais amostras nao comprariam precisao util: o numero e um PISO destinado a
+	// preencher a lacuna ate a media movel receber gravacoes de verdade, e nao uma
+	// previsao do custo de uma remessa.
+	amostrasDaCalibracao = 20
+
+	// tempoLimiteDaCalibracao impede que um disco doente segure a partida.
+	//
+	// Se ele nao for suficiente, a calibracao e ABANDONADA e o gateway sobe com a
+	// portaria sem semente — exatamente o comportamento da V2.4. Ficar preso aqui
+	// deixaria a planta sem aquisicao por causa de um refinamento.
+	tempoLimiteDaCalibracao = 10 * time.Second
 )
 
 func main() {
@@ -166,11 +185,27 @@ func executar() error {
 		return err
 	}
 
-	// A portaria e construida ANTES dos dois adaptadores, porque os dois a usam com
-	// papeis opostos: o ingresso ADMITE por ela, a apresentacao apenas a RELATA. Uma
-	// portaria por adaptador daria dois numeros diferentes para a mesma fila, e o
-	// /saude passaria a descrever uma saturacao que nao e a que esta recusando.
-	portaria := contrapressao.NovaPortaria(contrapressao.AjustesPadrao(), relogioDoSistema.Decorrido)
+	// A ORDEM DESTAS TRES ETAPAS E A DECISAO, e ela separa politica de medicao.
+	//
+	//  1. A POLITICA vem da instalacao — quanto cada classe de dado tolera esperar.
+	//     E uma promessa sobre o dado, e nenhum disco a altera.
+	//  2. A portaria e construida com ela, ANTES dos dois adaptadores: o ingresso
+	//     admite por ela, a apresentacao apenas a relata. Uma portaria por adaptador
+	//     daria dois numeros para a mesma fila, e o /saude descreveria uma saturacao
+	//     diferente da que esta recusando.
+	//  3. A MEDICAO vem do disco, e so semeia o custo. Ela nao toca na politica.
+	//
+	// Inverter isso — derivar o orcamento do disco — faria a promessa se acomodar ao
+	// pior hardware em silencio, e um limite que se ajusta ao que o encosta deixou de
+	// ser um limite.
+	admissao := instalacao.AdmissaoPadrao()
+	if configuracao != nil {
+		admissao = configuracao.Admissao()
+	}
+	portaria := contrapressao.NovaPortaria(
+		ingressohttp.AjustesDaPortaria(admissao), relogioDoSistema.Decorrido)
+
+	calibrarAdmissao(ctx, diario, portaria, admissao, registro)
 
 	apresentacao := apresentacaohttp.NovaApresentacao(diario, catalogo, rastreador,
 		relogioDoSistema, registro).ComInstalacao(configuracao).ComContrapressao(portaria)
@@ -230,6 +265,8 @@ func executar() error {
 		slog.Bool("projecao_ligada", projetor != nil),
 		slog.Bool("instalacao_configurada", configuracao != nil),
 		slog.Bool("ingresso_autenticado", tlsDoIngresso != nil),
+		slog.Duration("espera_maxima_da_amostra", admissao.OrcamentoDaAmostra),
+		slog.Duration("espera_maxima_do_evento", admissao.OrcamentoDoEventoDiscreto),
 		slog.Int("tipos_de_conteudo", len(catalogo.Tipos())))
 
 	falhaDeServidor := make(chan error, 2)
@@ -309,6 +346,51 @@ func ligarProjecao(ctx context.Context, urlDoBanco string, diario *diariosqlite.
 	}()
 
 	return projetor, nil
+}
+
+// calibrarAdmissao mede o disco do diario e semeia a portaria.
+//
+// POR QUE MEDIR NA PARTIDA. A portaria estima a espera multiplicando o custo medio
+// de uma gravacao pela fila, e ate a V2.4 esse custo comecava em zero: sem nenhuma
+// remessa concluida a estimativa era zero, cabia em qualquer orcamento, e a
+// admissao nao tinha com que decidir. A degradacao era segura e valia exatamente no
+// pior momento — logo apos um reinicio, quando a frota inteira reconecta com o
+// buffer cheio.
+//
+// FALHA AQUI NAO DERRUBA NADA, e a assimetria e a mesma do servidor de tempo e do
+// relatorio de comissionamento: o gateway sobe sem semente, que e o comportamento
+// da V2.4, e a media movel aprende com as primeiras remessas. Recusar-se a operar
+// por causa de um refinamento deixaria a planta sem AQUISICAO — e a aquisicao e o
+// unico caminho que nunca pode parar.
+//
+// O numero e registrado ao lado do orcamento de proposito. Juntos eles respondem a
+// unica pergunta que um operador faz quando ve recusa alta: o disco e lento, ou o
+// orcamento e apertado? Separados, ela nao tem resposta.
+func calibrarAdmissao(ctx context.Context, diario *diariosqlite.Diario,
+	portaria *contrapressao.Portaria, admissao instalacao.Admissao, registro *slog.Logger) {
+
+	ctxDaCalibracao, cancelar := context.WithTimeout(ctx, tempoLimiteDaCalibracao)
+	defer cancelar()
+
+	custo, err := diario.MedirCustoDeTransacao(ctxDaCalibracao, amostrasDaCalibracao)
+	if err != nil {
+		registro.Warn("calibracao do disco falhou: a admissao comeca sem custo conhecido e "+
+			"aprende com as primeiras remessas",
+			slog.String("erro", err.Error()))
+		return
+	}
+
+	portaria.Semear(custo)
+
+	// Quantas remessas cabem no orcamento da amostra ANTES de a recusa comecar. E a
+	// traducao do custo para a unidade em que o operador pensa — origens, e nao
+	// microssegundos.
+	folga := int(admissao.OrcamentoDaAmostra / custo)
+
+	registro.Info("disco do diario calibrado",
+		slog.Duration("custo_por_transacao", custo),
+		slog.Duration("espera_maxima_da_amostra", admissao.OrcamentoDaAmostra),
+		slog.Int("remessas_na_fila_antes_de_recusar_amostra", folga))
 }
 
 // intervaloDeComissionamento e a cadencia de atualizacao do relatorio.

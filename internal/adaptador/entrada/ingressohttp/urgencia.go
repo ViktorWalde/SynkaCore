@@ -2,6 +2,7 @@ package ingressohttp
 
 import (
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/aquisicao"
+	"github.com/ViktorWalde/SynkaCore/internal/dominio/instalacao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/contrapressao"
 )
 
@@ -57,4 +58,31 @@ func urgenciaDaRemessa(envelopes []aquisicao.Envelope) contrapressao.Urgencia {
 		}
 	}
 	return contrapressao.UrgenciaComum
+}
+
+// AjustesDaPortaria traduz a politica de admissao da instalacao para os ajustes da
+// portaria.
+//
+// Segundo tradutor deste arquivo, e ele existe pela mesma razao do primeiro: a
+// portaria e plataforma e nao pode conhecer instalacao, o dominio nao pode conhecer
+// contrapressao, e quem os liga e o adaptador — num lugar so.
+//
+// O QUE NAO ATRAVESSA, e vale mais que o que atravessa:
+//
+//	VagasSimultaneas — fica em UM, sempre, e nao e configuravel. O diario tem um
+//	                   escritor so (SetMaxOpenConns(1)); admitir mais nao produziria
+//	                   paralelismo, e sim a mesma fila de volta dentro do
+//	                   database/sql, onde ninguem a mede. Expor este numero
+//	                   ofereceria a quem opera uma alavanca que so pode piorar.
+//	EsperaMinima e   — sao o piso e o teto do Retry-After, e nao dizem respeito a
+//	EsperaMaxima       planta. O piso existe porque o cabecalho tem resolucao de
+//	                   segundos; o teto existe para que um gateway defeituoso nao
+//	                   cale a frota. Nenhum dos dois melhora sendo ajustado por
+//	                   instalacao.
+func AjustesDaPortaria(admissao instalacao.Admissao) contrapressao.Ajustes {
+	ajustes := contrapressao.AjustesPadrao()
+	ajustes.OrcamentoComum = admissao.OrcamentoDaAmostra
+	ajustes.OrcamentoReservado = admissao.OrcamentoDoEventoDiscreto
+	ajustes.FilaMaxima = admissao.FilaMaxima
+	return ajustes
 }

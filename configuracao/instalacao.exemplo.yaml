@@ -167,6 +167,63 @@ pontos_de_medicao:
 # tempo para o mesmo canal fariam a interpretacao do dado depender de qual delas o
 # codigo encontrasse primeiro.
 
+# ---------------------------------------------------------------------------
+# ADMISSAO: QUANTO CADA CLASSE DE DADO TOLERA ESPERAR NA PORTA
+# ---------------------------------------------------------------------------
+#
+# O bloco INTEIRO e opcional, e a maioria das instalacoes nunca vai precisar dele.
+# Ausente, valem os padroes dimensionados pela medicao de capacidade do projeto.
+#
+# O QUE ESTES NUMEROS SAO. Uma PROMESSA SOBRE O DADO, e nao um ajuste de maquina.
+# "Uma amostra desta planta nao espera mais que dois segundos na porta do gateway."
+#
+# Quando o gateway fica saturado, ele para de aceitar tudo e passa a escolher. A
+# escolha sai da mesma distincao que governa o resto do sistema:
+#
+#   amostra          — prefere ser RECUSADA a esperar. A proxima chega logo e carrega
+#                      quase a mesma informacao; ocupar a fila com ela atrasa o que
+#                      nao tem substituto.
+#   evento discreto  — prefere ESPERAR a ser recusado. Parada de maquina, alarme e
+#                      contagem nao tem vizinho que os reponha.
+#
+# Recusar NAO perde dado: a origem devolve o lote ao buffer e retransmite.
+#
+# O QUE ESTES NUMEROS NAO SAO. Eles nao sao calibragem de hardware. O custo de gravar
+# neste disco e MEDIDO pelo proprio gateway na partida, e aparece no log e no /saude
+# como `ingestion_cost_us` — voce nao precisa saber esse numero para escrever este
+# bloco, e nao deveria tentar compensa-lo aqui.
+#
+# CONSEQUENCIA QUE VALE ENTENDER ANTES DE MEXER: num disco mais lento, o gateway
+# recusa com a fila mais rasa, porque menos remessas cabem dentro da mesma promessa.
+# Isso e o sistema funcionando. Se voce ver recusa alta, olhe primeiro
+# `ingestion_cost_us` no /saude: custo alto significa que a midia nao comporta a
+# frota, e aumentar os numeros aqui so troca recusa por atraso.
+#
+# admissao:
+#   # Quanto uma remessa so de amostras aceita esperar. Padrao: 2s
+#   espera_maxima_da_amostra: 2s
+#
+#   # Quanto uma remessa que carrega evento discreto aceita esperar. Padrao: 10s
+#   #
+#   # PRECISA ser maior ou igual ao da amostra, e o gateway RECUSA A PARTIDA se nao
+#   # for. Invertido, a reserva se inverteria junto: o gateway passaria a recusar
+#   # parada de maquina antes de recusar leitura de temperatura, e nada denunciaria —
+#   # ele continuaria aceitando dado e respondendo saudavel enquanto a contagem de
+#   # paradas ficasse permanentemente errada.
+#   espera_maxima_do_evento: 10s
+#
+#   # Quantas remessas podem aguardar admissao ao mesmo tempo. Padrao: 1024
+#   #
+#   # Este e um limite de MEMORIA, e nao de politica: cada uma que espera segura o
+#   # corpo da remessa vivo. Ele existe para que uma saturacao prolongada nao troque
+#   # "resposta lenta" por "gateway morto por falta de memoria" — o unico modo de
+#   # falha que a aquisicao nao sobrevive. Reduza-o em equipamento com pouca RAM.
+#   fila_maxima: 1024
+#
+# Declarar so um dos campos e legitimo: os outros continuam nos padroes. Assim voce
+# muda um numero sem repetir os demais e sem arriscar copiar errado o que nao queria
+# mudar.
+
 # Grandezas aceitas vem do contrato de fio e sao listadas pelo proprio gateway:
 #
 #     curl http://127.0.0.1:8080/contrato

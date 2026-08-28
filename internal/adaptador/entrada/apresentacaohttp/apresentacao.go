@@ -173,6 +173,19 @@ type respostaDeSaude struct {
 	// IngestionWaitMs e a espera estimada que o gateway devolve no Retry-After.
 	IngestionWaitMs int64 `json:"ingestion_wait_ms"`
 
+	// IngestionCostUs e quanto uma remessa tem custado no caminho de gravacao.
+	//
+	// Existe para responder a UNICA pergunta que um operador faz ao ver recusa alta,
+	// e que os outros campos nao respondem: o disco e lento, ou o orcamento e
+	// apertado? Sem este numero as duas causas produzem exatamente o mesmo
+	// sintoma — fila longa e amostras recusadas —, e a acao certa e oposta em cada
+	// uma: trocar a midia, ou revisar o que a instalacao declarou.
+	//
+	// Microssegundos porque a faixa medida vive entre dezenas de microssegundos e
+	// poucos milissegundos; em milissegundos inteiros, o caso bom apareceria como
+	// zero.
+	IngestionCostUs int64 `json:"ingestion_cost_us"`
+
 	// IngestionShedSamples e IngestionShedEvents contam as recusas SEPARADAS, e a
 	// separacao e a informacao.
 	//
@@ -254,6 +267,7 @@ func (a *Apresentacao) relatarAdmissao(resposta *respostaDeSaude) {
 	}
 	resposta.IngestionQueue = estado.Aguardando
 	resposta.IngestionWaitMs = estado.EsperaEstimada.Milliseconds()
+	resposta.IngestionCostUs = estado.CustoMedio.Microseconds()
 	resposta.IngestionShedSamples = estado.RecusadasComuns
 	resposta.IngestionShedEvents = estado.RecusadasReservadas
 }

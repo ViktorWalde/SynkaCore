@@ -121,6 +121,14 @@ type Instalacao struct {
 	pontosPorCanal   map[ChaveDeCanal][]PontoConfigurado
 	motivos          map[uint32]string
 	versaoDosMotivos uint32
+
+	// admissao e quanto cada classe de dado tolera esperar na porta do gateway.
+	//
+	// Fica aqui, e nao numa bandeira de linha de comando, porque e uma afirmacao
+	// sobre a PLANTA: quanto uma amostra desta instalacao pode envelhecer antes de
+	// valer menos que a que vem atras dela. Bandeira some na proxima unidade
+	// systemd que alguem reescrever; este arquivo e versionado e revisavel.
+	admissao Admissao
 }
 
 // ParametrosDeInstalacao e a forma bruta com que a configuracao chega do arquivo.
@@ -135,6 +143,11 @@ type ParametrosDeInstalacao struct {
 	Mapeamentos      map[ChaveDeCanal][]PontoConfigurado
 	Motivos          map[uint32]string
 	VersaoDosMotivos uint32
+
+	// Admissao e opcional. Nula, valem os padroes dimensionados pela medicao da
+	// V2.3 — que e o caso de toda instalacao que nunca precisou pensar no assunto,
+	// e portanto o caso comum.
+	Admissao *Admissao
 }
 
 // NovaInstalacao valida e constroi a configuracao.
@@ -205,6 +218,11 @@ func NovaInstalacao(parametros ParametrosDeInstalacao) (*Instalacao, error) {
 		return nil, err
 	}
 
+	admissao, err := resolverAdmissao(parametros.Admissao)
+	if err != nil {
+		return nil, err
+	}
+
 	motivos := make(map[uint32]string, len(parametros.Motivos))
 	for codigo, rotulo := range parametros.Motivos {
 		if codigo == 0 {
@@ -219,7 +237,23 @@ func NovaInstalacao(parametros ParametrosDeInstalacao) (*Instalacao, error) {
 		pontosPorCanal:   pontos,
 		motivos:          motivos,
 		versaoDosMotivos: parametros.VersaoDosMotivos,
+		admissao:         admissao,
 	}, nil
+}
+
+// resolverAdmissao devolve a politica declarada, ja validada, ou o padrao.
+//
+// Funcao separada, e nao um bloco dentro de NovaInstalacao, porque o linter de
+// complexidade cognitiva cobrou — e ele estava certo. NovaInstalacao ja carrega
+// tres regras que se cruzam (vigencia sobreposta no canal, ponto ambiguo entre
+// canais, codigo de motivo reservado); acrescentar uma quarta decisao no mesmo
+// corpo e como uma funcao de validacao vira aquela que ninguem consegue mais ler
+// inteira antes de mexer.
+func resolverAdmissao(declarada *Admissao) (Admissao, error) {
+	if declarada == nil {
+		return AdmissaoPadrao(), nil
+	}
+	return NovaAdmissao(*declarada)
 }
 
 // vigenciaDeCanal liga um mapeamento ao canal que o declarou, para a checagem de

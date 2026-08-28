@@ -214,13 +214,16 @@ acordado:
 
 ```json
 {"journal":"available","projection":"degraded","ingestion":"shedding",
- "ingestion_queue":399,"ingestion_shed_samples":404,"ingestion_shed_events":0, ...}
+ "ingestion_queue":399,"ingestion_cost_us":4076,
+ "ingestion_shed_samples":404,"ingestion_shed_events":0, ...}
 ```
 
 `journal` falhando significa que o sistema está perdendo a capacidade de aceitar dado.
 `projection` falhando significa que o dado está salvo e os dashboards estão atrasados.
 `ingestion` em `shedding` significa que o gateway está cheio e as origens estão
 bufferizando — não é falha, e por isso o status HTTP continua 200.
+`ingestion_cost_us` é o custo medido de uma remessa neste disco, e responde a
+pergunta que decide a ação: a mídia é lenta, ou o orçamento é apertado?
 
 ---
 
@@ -268,6 +271,7 @@ Documentar "não duplique" não sustenta nada. Cada item abaixo é uma trava rea
 | Invariante | Trava |
 |---|---|
 | **Identidade provada, não afirmada** | O `id_do_dispositivo` da remessa é confrontado com o nome comum do certificado que o TLS validou. Sem isso, um dispositivo com credencial legítima pode gravar dado sob a identidade do vizinho — e o resultado é plausível, indetectável depois. |
+| **Orçamento de evento nunca abaixo do de amostra** | `NovaAdmissao` recusa a partida. Invertido, o gateway passaria a recusar parada de máquina antes de leitura de temperatura — continuando a aceitar dado e a responder saudável enquanto a contagem de paradas ficasse permanentemente errada. |
 | **Saturação recusa amostra antes de evento** | A admissão dá orçamentos de espera diferentes por `ClasseDeDado`. Sem isso, contrapressão seria um limitador de taxa — e um limitador de taxa recusa uma parada de máquina com a mesma naturalidade com que recusa a milésima leitura de temperatura. |
 | **Um ponto de validação por conceito** | `NovoEnvelope` é o único construtor de mensagem. Campos não exportados ⇒ possuir um `Envelope` é prova de que ele é válido. Não existe "validar de novo por segurança". |
 | **Interface nomeada em vez de asserção anônima** | `TestConteudoEnderecadoCasaComOContrato` lê o descritor e exige que conteúdo com campo `endereco` implemente `ConteudoEnderecado`, e vice-versa. Nasceu de um defeito real: uma asserção para interface anônima que nunca casava, deixando o enriquecimento inteiro como código morto. |
@@ -367,6 +371,8 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 - **[V2.4](docs/V2.4.md)** — contrapressão explícita: o gateway passa a dizer que
   está cheio, com uma espera que ele mediu, e recusa amostra antes de recusar
   evento discreto.
+- **[V2.5](docs/V2.5.md)** — o orçamento de espera vira promessa declarada na
+  instalação, e o gateway calibra o próprio disco na partida.
 - **[Visão geral visual](docs/VISAO-GERAL.md)** — diagramas de fluxo e cenários de queda.
 - **[Trade-offs](docs/TRADE-OFFS.md)** — decisões técnicas e seus custos.
 - **[Qualidade](docs/QUALIDADE.md)** — os portões do build.
@@ -392,3 +398,4 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 | **V2.1** | 🚧 Em desenvolvimento | mTLS com CA interna, identidade autenticada vs. reivindicada, servidor de tempo |
 | **V2.3** | 🚧 Em desenvolvimento | Capacidade medida, gargalo identificado, painéis do Grafana como código |
 | **V2.4** | 🚧 Em desenvolvimento | Contrapressão explícita: saturação declarada com `429`, `Retry-After` medido, e reserva por classe de dado |
+| **V2.5** | 🚧 Em desenvolvimento | Orçamento de espera na configuração da instalação, e calibração do disco na partida |

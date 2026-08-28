@@ -133,4 +133,22 @@ CREATE TABLE IF NOT EXISTS ancora_de_sessao_de_boot (
 
     PRIMARY KEY (id_do_dispositivo, id_da_sessao_de_boot)
 );
+
+-- calibracao_de_disco existe para responder, na partida, quanto custa CONFIRMAR
+-- uma transacao neste disco.
+--
+-- TABELA SEPARADA, e nao linhas descartaveis no proprio diario, e a razao nao e
+-- limpeza. Se o processo morresse no meio da calibracao, aquelas linhas ficariam no
+-- diario e seriam PROJETADAS para o modelo de leitura — dado fabricado, com
+-- aparencia de medicao, num sistema cuja propriedade central e nunca mentir sobre o
+-- que observou. Nenhuma economia de codigo paga isso.
+--
+-- Mesma arquivo, mesmo WAL, mesmo fsync: o que se mede aqui e o que a ingestao vai
+-- pagar. A V2.3 estabeleceu que o custo e POR TRANSACAO e nao por registro — do
+-- lote unitario ao de 500 o custo por envelope cai 38,6x —, entao uma transacao de
+-- uma linha isola justamente o termo dominante.
+CREATE TABLE IF NOT EXISTS calibracao_de_disco (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    carga   BLOB NOT NULL
+);
 `

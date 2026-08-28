@@ -233,6 +233,13 @@ no tamanho nem na ordem de chegada.
 evento —, agora na porta de entrada do gateway. Recusar não perde dado: o lote volta ao
 buffer e é retransmitido. Ver [V2.4](V2.4.md).
 
+Os dois orçamentos são uma **promessa sobre o dado** — "uma amostra desta planta não
+espera mais que dois segundos" —, declarada no arquivo da instalação. O que o disco
+determina é outra coisa: **quanto custa uma gravação**, medido pelo gateway na
+partida e corrigido pelo tráfego real. Política e medição entram por lados opostos, e
+cruzá-las faria o limite se acomodar em silêncio ao pior hardware. Ver
+[V2.5](V2.5.md).
+
 ---
 
 ## As duas classes de dado
@@ -319,6 +326,8 @@ make no
 - **[V2.0](V2.0.md)** — a reescrita: por que foi antecipada e o que foi encontrado no caminho.
 - **[V2.4](V2.4.md)** — contrapressão explícita: o gateway diz que está cheio, com uma
   espera que ele mediu.
+- **[V2.5](V2.5.md)** — o orçamento de espera é promessa da instalação; o custo do
+  disco é medido na partida.
 - **[Trade-offs](TRADE-OFFS.md)** — decisões e seus custos.
 - **[Qualidade](QUALIDADE.md)** — os portões do build.
 - **Histórico V1.x** — [V1.0](V1.0.md) · [V1.1](V1.1.md) · [V1.2](V1.2.md).

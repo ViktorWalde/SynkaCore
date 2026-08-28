@@ -49,6 +49,24 @@ type arquivo struct {
 	Instalacao string             `yaml:"instalacao"`
 	Motivos    *catalogoDeMotivos `yaml:"motivos_de_parada"`
 	Pontos     []pontoDoArquivo   `yaml:"pontos_de_medicao"`
+	Admissao   *admissaoDoArquivo `yaml:"admissao"`
+}
+
+// admissaoDoArquivo e o bloco opcional que declara quanto cada classe tolera
+// esperar na porta do gateway.
+//
+// Ponteiro, e nao valor: ausente significa "valem os padroes", e um valor zerado
+// significaria "esperar zero" — que recusaria tudo. A diferenca entre "nao declarei"
+// e "declarei zero" precisa sobreviver a decodificacao.
+//
+// Duracoes em TEXTO, interpretadas por time.ParseDuration: `2s`, `500ms`, `1m30s`.
+// Um numero solto obrigaria a escolher uma unidade implicita, e `2` significando
+// segundos num campo e milissegundos noutro e como um arquivo de configuracao
+// produz dado errado sem ninguem digitar nada errado.
+type admissaoDoArquivo struct {
+	EsperaMaximaDaAmostra string `yaml:"espera_maxima_da_amostra"`
+	EsperaMaximaDoEvento  string `yaml:"espera_maxima_do_evento"`
+	FilaMaxima            *int   `yaml:"fila_maxima"`
 }
 
 type catalogoDeMotivos struct {
@@ -210,9 +228,15 @@ func montar(doArquivo arquivo) (*instalacao.Instalacao, error) {
 		})
 	}
 
+	admissao, err := montarAdmissao(doArquivo.Admissao)
+	if err != nil {
+		return nil, err
+	}
+
 	parametros := instalacao.ParametrosDeInstalacao{
 		ID:          strings.TrimSpace(doArquivo.Instalacao),
 		Mapeamentos: mapeamentos,
+		Admissao:    admissao,
 	}
 	if doArquivo.Motivos != nil {
 		parametros.Motivos = doArquivo.Motivos.Codigos
@@ -220,4 +244,64 @@ func montar(doArquivo arquivo) (*instalacao.Instalacao, error) {
 	}
 
 	return instalacao.NovaInstalacao(parametros)
+}
+
+// montarAdmissao interpreta o bloco opcional de admissao.
+//
+// Bloco ausente devolve nil, e NovaInstalacao aplica os padroes. Bloco PRESENTE mas
+// incompleto herda o padrao campo a campo: declarar apenas
+// `espera_maxima_da_amostra` e uma intencao legitima — mexer num numero sem
+// precisar repetir os outros dois e arriscar copiar errado o que nao se queria
+// mudar.
+//
+// A coerencia entre os campos NAO e verificada aqui, e sim em instalacao.NovaAdmissao.
+// Verificar nos dois lugares seria a mesma regra em duas copias, e a que ninguem
+// lembra de atualizar e sempre a que esta mais longe do dominio.
+func montarAdmissao(doArquivo *admissaoDoArquivo) (*instalacao.Admissao, error) {
+	if doArquivo == nil {
+		return nil, nil
+	}
+
+	politica := instalacao.AdmissaoPadrao()
+
+	amostra, err := analisarDuracao(doArquivo.EsperaMaximaDaAmostra, "espera_maxima_da_amostra")
+	if err != nil {
+		return nil, err
+	}
+	if amostra > 0 {
+		politica.OrcamentoDaAmostra = amostra
+	}
+
+	evento, err := analisarDuracao(doArquivo.EsperaMaximaDoEvento, "espera_maxima_do_evento")
+	if err != nil {
+		return nil, err
+	}
+	if evento > 0 {
+		politica.OrcamentoDoEventoDiscreto = evento
+	}
+
+	if doArquivo.FilaMaxima != nil {
+		politica.FilaMaxima = *doArquivo.FilaMaxima
+	}
+	return &politica, nil
+}
+
+// analisarDuracao interpreta uma duracao da configuracao.
+//
+// Vazio devolve zero SEM erro, e o chamador o le como "nao declarado". Texto
+// presente e ilegivel, ao contrario, derruba a partida: alguem quis dizer alguma
+// coisa e o gateway nao entendeu, e seguir com o padrao esconderia justamente o
+// engano que precisa ser visto.
+func analisarDuracao(bruto, campo string) (time.Duration, error) {
+	bruto = strings.TrimSpace(bruto)
+	if bruto == "" {
+		return 0, nil
+	}
+
+	duracao, err := time.ParseDuration(bruto)
+	if err != nil {
+		return 0, falha.Envolver(falha.CategoriaEntradaInvalida, operacaoCarregar,
+			"admissao: "+campo+" invalido: "+bruto+". Use 2s, 500ms ou 1m30s", err)
+	}
+	return duracao, nil
 }

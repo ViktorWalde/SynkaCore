@@ -212,6 +212,37 @@ func NovaPortaria(ajustes Ajustes, decorrido func() time.Duration) *Portaria {
 	}
 }
 
+// Semear informa um custo inicial, medido antes de qualquer remessa real.
+//
+// Existe porque a portaria nasce SEM saber quanto custa gravar neste disco, e
+// enquanto ela nao sabe a espera estimada e zero — cabe em qualquer orcamento, e
+// todo mundo entra. A degradacao e segura e vale no pior momento possivel: logo
+// apos um reinicio do gateway, quando a frota inteira reconecta com o buffer cheio.
+//
+// SO SEMEIA SE NADA FOI MEDIDO AINDA, e essa condicao e o ponto. A semente e um
+// piso derivado de uma transacao vazia, e nao uma previsao do custo de uma remessa
+// de verdade; deixa-la sobrescrever medicao real seria trocar o numero bom pelo
+// aproximado. Ela preenche a lacuna inicial e depois se cala — a media movel,
+// alimentada por gravacoes de verdade, corrige para cima em poucas remessas.
+//
+// Custo nao positivo e ignorado: uma calibracao que nao mediu nada nao tem o que
+// afirmar, e afirmar zero seria voltar ao estado que este metodo existe para
+// fechar.
+func (p *Portaria) Semear(custo time.Duration) {
+	if custo <= 0 {
+		return
+	}
+
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	if p.houveMedicao {
+		return
+	}
+	p.custoMedio = custo
+	p.houveMedicao = true
+}
+
 // Passagem e a prova de que o portador foi admitido, e o unico jeito de devolver
 // a vaga.
 //
