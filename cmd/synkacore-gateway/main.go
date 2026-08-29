@@ -75,6 +75,26 @@ const (
 	// intervaloDePodaPadrao e a frequencia da limpeza do diario.
 	intervaloDePodaPadrao = time.Hour
 
+	// tetoDoDiarioPadrao limita quanto o diario pode ocupar em disco.
+	//
+	// Ele existe porque a PODA NAO BASTA: ela so remove o que ja foi projetado e
+	// envelheceu, e portanto nao remove nada quando nao ha projecao configurada — que
+	// e a configuracao recomendada para comissionar e para operar sem infraestrutura
+	// analitica. Sem teto, um gateway deixado "so adquirindo" enche o disco.
+	//
+	// Dois gibibytes e folgado para o cenario alvo e conservador para o hardware: num
+	// mini PC de planta com 32 GB, o diario nunca passa de 6% do disco. Uma origem a
+	// 1 Hz com quatro canais leva meses para alcanca-lo; 200 origens a 100/s levam
+	// horas — e nas duas pontas a recusa acontece antes de a maquina parar.
+	tetoDoDiarioPadrao = 2 << 30
+
+	// intervaloDeOcupacaoPadrao e a frequencia com que o tamanho e reconferido.
+	//
+	// Dez segundos, e nao a cada remessa: a 20.000 envelopes/s o diario cresce alguns
+	// megabytes por segundo, e a margem de erro dessa janela cabe folgada dentro do
+	// teto. O caminho quente paga uma leitura atomica em vez de um os.Stat.
+	intervaloDeOcupacaoPadrao = 10 * time.Second
+
 	// retencaoDoDiarioPadrao e quanto tempo um registro ja projetado permanece.
 	//
 	// Sete dias e a janela que permite reprocessar quando um erro de projecao e
@@ -127,6 +147,8 @@ func executar() error {
 		"endereco de escuta de consulta e saude (lado de escritorio)")
 	caminhoDoDiario := flag.String("diario", caminhoDoDiarioPadrao,
 		"caminho do arquivo do diario de ingestao")
+	tetoDoDiario := flag.Int64("diario-maximo", tetoDoDiarioPadrao,
+		"teto de bytes do diario; ao alcanca-lo o gateway recusa remessa em vez de encher o disco. Zero desliga")
 	bancoDeConsulta := flag.String("banco", bancoDeConsultaPadrao,
 		"URL do TimescaleDB para o modelo de leitura; vazio desliga a projecao")
 	caminhoDaInstalacao := flag.String("instalacao", instalacaoPadrao,
@@ -176,6 +198,17 @@ func executar() error {
 		return err
 	}
 	defer func() { _ = diario.Fechar() }()
+	diario = diario.ComTetoDeBytes(*tetoDoDiario)
+
+	// A primeira medicao acontece ANTES de o servidor atender.
+	//
+	// Sem ela, um gateway que reinicia com o diario ja acima do teto aceitaria
+	// remessa ate o primeiro ciclo do laco — dez segundos gravando exatamente o que o
+	// teto existe para impedir, e justamente quando a frota inteira reconecta.
+	if _, err := diario.MedirOcupacao(); err != nil {
+		registro.Warn("nao foi possivel medir a ocupacao inicial do diario",
+			slog.String("erro", err.Error()))
+	}
 
 	rastreador := estadooperacional.NovoRastreador(relogioDoSistema.Agora(),
 		func(anterior, atual estadooperacional.Estado) {
@@ -274,6 +307,7 @@ func executar() error {
 		slog.String("ingresso", *enderecoDeIngresso),
 		slog.String("apresentacao", *enderecoDeApresentacao),
 		slog.String("diario", *caminhoDoDiario),
+		slog.Int64("teto_do_diario_bytes", *tetoDoDiario),
 		slog.Bool("projecao_ligada", projetor != nil),
 		slog.Bool("instalacao_configurada", configuracao != nil),
 		slog.Bool("ingresso_autenticado", tlsDoIngresso != nil),
@@ -285,6 +319,7 @@ func executar() error {
 	go servir(servidorDeIngresso, "ingresso", falhaDeServidor)
 	go servir(servidorDeApresentacao, "apresentacao", falhaDeServidor)
 	go podarPeriodicamente(ctx, diario, relogioDoSistema, registro)
+	go vigiarOcupacaoDoDiario(ctx, diario, registro)
 	ligarServidorDeTempo(ctx, *enderecoDoTempo, relogioDoSistema, registro)
 
 	select {
@@ -626,6 +661,77 @@ func podarPeriodicamente(ctx context.Context, diario *diariosqlite.Diario,
 			}
 			if removidos > 0 {
 				registro.Info("diario podado", slog.Int64("registros_removidos", removidos))
+			}
+		}
+	}
+}
+
+// fracaoDeAlertaDaOcupacao e a partir de quanto do teto o gateway comeca a avisar.
+//
+// Oitenta por cento da folga para agir ANTES da recusa. Avisar so ao alcancar o teto
+// seria avisar junto com o sintoma, e quem opera precisa da diferenca entre "vai
+// encher" e "encheu" — a primeira e agendavel, a segunda e uma parada.
+const fracaoDeAlertaDaOcupacao = 0.8
+
+// vigiarOcupacaoDoDiario remede o tamanho do diario periodicamente.
+//
+// Laco proprio, e nao junto da poda, porque as cadencias sao de ordens diferentes: a
+// poda roda de hora em hora e a ocupacao precisa ser conhecida em segundos. Amarrar
+// as duas faria o gateway descobrir que passou do teto uma hora depois de ter passado.
+//
+// O aviso e emitido apenas na TRANSICAO para cada faixa, e nao a cada ciclo. Um log
+// que repete a mesma linha a cada dez segundos durante dias enterra a informacao util
+// e enche o disco — que e precisamente o recurso em disputa aqui.
+func vigiarOcupacaoDoDiario(ctx context.Context, diario *diariosqlite.Diario,
+	registro *slog.Logger) {
+
+	temporizador := time.NewTicker(intervaloDeOcupacaoPadrao)
+	defer temporizador.Stop()
+
+	avisado, recusando := false, false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-temporizador.C:
+			medido, err := diario.MedirOcupacao()
+			if err != nil {
+				registro.Warn("nao foi possivel medir a ocupacao do diario",
+					slog.String("erro", err.Error()))
+				continue
+			}
+
+			// Teto desligado: nao ha faixa a reportar, e avisar sobre um limite que
+			// nao existe treinaria quem le a ignorar o aviso quando ele existir.
+			_, teto := diario.Ocupacao()
+			if teto <= 0 {
+				continue
+			}
+
+			switch {
+			case medido >= teto && !recusando:
+				registro.Error("DIARIO NO TETO: o gateway esta RECUSANDO remessa para nao encher "+
+					"o disco. As origens estao bufferizando e vao retransmitir. Ligue a projecao "+
+					"para que a poda libere espaco, aumente -diario-maximo, ou libere disco",
+					slog.Int64("ocupado_bytes", medido),
+					slog.Int64("teto_bytes", teto))
+				recusando, avisado = true, true
+
+			case medido < teto && recusando:
+				registro.Info("diario voltou para baixo do teto: as remessas voltaram a ser aceitas",
+					slog.Int64("ocupado_bytes", medido),
+					slog.Int64("teto_bytes", teto))
+				recusando = false
+
+			case !recusando && float64(medido) >= float64(teto)*fracaoDeAlertaDaOcupacao && !avisado:
+				registro.Warn("diario passou de 80% do teto; sem projecao configurada ele NAO e podado",
+					slog.Int64("ocupado_bytes", medido),
+					slog.Int64("teto_bytes", teto))
+				avisado = true
+
+			case float64(medido) < float64(teto)*fracaoDeAlertaDaOcupacao:
+				avisado = false
 			}
 		}
 	}

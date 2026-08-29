@@ -272,6 +272,8 @@ Documentar "não duplique" não sustenta nada. Cada item abaixo é uma trava rea
 |---|---|
 | **Identidade provada, não afirmada** | O `id_do_dispositivo` da remessa é confrontado com o nome comum do certificado que o TLS validou. Sem isso, um dispositivo com credencial legítima pode gravar dado sob a identidade do vizinho — e o resultado é plausível, indetectável depois. |
 | **Orçamento de evento nunca abaixo do de amostra** | `NovaAdmissao` recusa a partida. Invertido, o gateway passaria a recusar parada de máquina antes de leitura de temperatura — continuando a aceitar dado e a responder saudável enquanto a contagem de paradas ficasse permanentemente errada. |
+| **O diário nunca enche o disco** | Um teto de bytes, conferido a cada gravação e independente da poda — que não remove nada quando não há projeção configurada. Ao alcançá-lo o gateway recusa com `507`: recusar é recuperável, disco cheio derruba a máquina inteira. |
+| **A saúde do diário prova ESCRITA** | `Verificar` grava e confirma uma transação, não só lê. Num disco cheio o `SELECT` funciona e todo `INSERT` falha — a verificação anterior reportaria saudável no modo de falha mais provável em campo. |
 | **Saturação recusa amostra antes de evento** | A admissão dá orçamentos de espera diferentes por `ClasseDeDado`. Sem isso, contrapressão seria um limitador de taxa — e um limitador de taxa recusa uma parada de máquina com a mesma naturalidade com que recusa a milésima leitura de temperatura. |
 | **Um ponto de validação por conceito** | `NovoEnvelope` é o único construtor de mensagem. Campos não exportados ⇒ possuir um `Envelope` é prova de que ele é válido. Não existe "validar de novo por segurança". |
 | **Interface nomeada em vez de asserção anônima** | `TestConteudoEnderecadoCasaComOContrato` lê o descritor e exige que conteúdo com campo `endereco` implemente `ConteudoEnderecado`, e vice-versa. Nasceu de um defeito real: uma asserção para interface anônima que nunca casava, deixando o enriquecimento inteiro como código morto. |
@@ -378,6 +380,8 @@ isso vale mais que qualquer vantagem de velocidade bruta.
   instalação, e o gateway calibra o próprio disco na partida.
 - **[V2.6](docs/V2.6.md)** — o caminho de leitura ganha testes contra banco real, e
   o gateway vira um pacote instalável.
+- **[V2.7](docs/V2.7.md)** — o diário ganha teto, o health check passa a provar
+  escrita, e disco cheio deixa de ser um modo de falha silencioso.
 - **[Implantação](docs/IMPLANTACAO.md)** — instalar, comissionar por etapas,
   atualizar e reverter numa planta.
 - **[Visão geral visual](docs/VISAO-GERAL.md)** — diagramas de fluxo e cenários de queda.
@@ -407,3 +411,4 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 | **V2.4** | 🚧 Em desenvolvimento | Contrapressão explícita: saturação declarada com `429`, `Retry-After` medido, e reserva por classe de dado |
 | **V2.5** | 🚧 Em desenvolvimento | Orçamento de espera na configuração da instalação, e calibração do disco na partida |
 | **V2.6** | 🚧 Em desenvolvimento | Modelo de leitura exercitado contra banco real, unidade systemd, pacote de implantação e identidade de versão |
+| **V2.7** | 🚧 Em desenvolvimento | Teto de tamanho do diário e verificação de escrita: disco cheio deixa de ser silencioso |

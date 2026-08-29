@@ -23,7 +23,7 @@ package versao
 // entrega (V2.0, V2.1, ...) e nao por compatibilidade de API: nao ha API publica a
 // estabilizar. O que precisa ser comparavel em campo e "esta planta esta atras da
 // outra?", e tres numeros respondem isso melhor que um rotulo.
-const Numero = "2.6.0"
+const Numero = "2.7.0"
 
 // Produto e o nome que sai no fio e no log.
 const Produto = "synkacore"

@@ -160,7 +160,19 @@ type respostaDeSaude struct {
 	// aqui esta atras da outra?" nao tinha resposta sem abrir o binario.
 	Version string `json:"version"`
 
-	Journal         string `json:"journal"`
+	Journal string `json:"journal"`
+
+	// JournalBytes e JournalLimitBytes expoem a ocupacao do diario.
+	//
+	// Existem para que o monitoramento alarme ANTES da recusa, e nao junto com ela. A
+	// diferenca entre "vai encher" e "encheu" e a diferenca entre uma manutencao
+	// agendada e uma parada — e sem os dois numeros lado a lado ninguem consegue
+	// calcular a primeira.
+	//
+	// Limite zero significa teto desligado.
+	JournalBytes      int64 `json:"journal_bytes"`
+	JournalLimitBytes int64 `json:"journal_limit_bytes"`
+
 	Projection      string `json:"projection"`
 	ProjectionSince string `json:"projection_since"`
 
@@ -241,10 +253,39 @@ func (a *Apresentacao) responderSaude(escritor http.ResponseWriter, requisicao *
 	}
 	a.relatarAdmissao(&resposta)
 
+	bytes, teto := a.diario.Ocupacao()
+	resposta.JournalBytes = bytes
+	resposta.JournalLimitBytes = teto
+
 	status := http.StatusOK
+
+	// TRES ESTADOS PARA O DIARIO, e o do meio foi acrescentado depois de o teste de
+	// ponta a ponta flagrar o gateway respondendo `available` enquanto recusava TODA
+	// remessa com 507.
+	//
+	//	available   — aceitando gravacao
+	//	full        — recusando por causa do teto; recuperavel, as origens bufferizam
+	//	unavailable — nao responde
+	//
+	// `full` e um estado proprio, e nao um detalhe de `available`, porque a sonda de
+	// escrita passa nele: ela grava na tabela de calibracao, que nao esta sujeita ao
+	// teto. Sem esta linha, a verificacao mais honesta do projeto continuaria dizendo
+	// que o diario esta bem enquanto a planta nao consegue entregar um unico dado.
+	//
+	// O status vira 503 porque o sistema PERDEU a capacidade de aceitar dado, que e o
+	// gatilho declarado para acordar alguem. Diferente de `ingestion: shedding`, que
+	// mantem 200: ali o gateway continua aceitando, so mais devagar.
+	if teto > 0 && bytes >= teto {
+		resposta.Journal = "full"
+		status = http.StatusServiceUnavailable
+	}
+
 	if err := a.diario.Verificar(requisicao.Context()); err != nil {
 		resposta.Journal = "unavailable"
 		status = http.StatusServiceUnavailable
+		// A verificacao agora inclui uma GRAVACAO de prova, e por isso esta linha
+		// passou a cobrir o modo de falha mais provavel em campo: disco cheio, em que
+		// a leitura continua funcionando e so a escrita falha.
 		a.registro.Error("o diario nao respondeu a verificacao de saude",
 			slog.String("erro", err.Error()))
 	}

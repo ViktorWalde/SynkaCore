@@ -43,6 +43,17 @@ func statusDe(categoria falha.Categoria) int {
 		// e tentar de novo mais tarde.
 		return http.StatusTooManyRequests
 
+	case falha.CategoriaArmazenamentoEsgotado:
+		// 507 Insufficient Storage. Um 5xx de proposito: o problema e NOSSO, o dado
+		// da origem e bom, e ela deve guarda-lo. Um 4xx a mandaria descartar dado
+		// perfeito por causa de um disco que alguem vai esvaziar.
+		//
+		// E um codigo PROPRIO em vez de 503, porque "o gateway esta sem espaco" e
+		// acionavel de um jeito que "o gateway esta indisponivel" nao e: quem le o
+		// log da origem sabe imediatamente o que foi, sem precisar de acesso ao
+		// gateway.
+		return http.StatusInsufficientStorage
+
 	case falha.CategoriaIndisponivel:
 		return http.StatusServiceUnavailable
 

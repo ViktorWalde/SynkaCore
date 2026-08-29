@@ -61,6 +61,23 @@ const (
 	// falha, e CategoriaInterna, porque a durabilidade foi violada.
 	CategoriaIndisponivel
 
+	// CategoriaArmazenamentoEsgotado indica que o diario alcancou o teto de tamanho.
+	//
+	// DISTINTA de CategoriaRecursoEsgotado, e a distincao existe porque a acao do
+	// OPERADOR e oposta, ainda que a da origem seja a mesma nos dois casos —
+	// preservar o lote e tentar de novo.
+	//
+	//	RecursoEsgotado        — o gateway esta ocupado. Passa sozinho, e esperar
+	//	                         resolve. Ninguem precisa fazer nada.
+	//	ArmazenamentoEsgotado  — o disco encheu. NAO passa sozinho se nao houver
+	//	                         projecao consumindo o diario, e esperar so adia. E
+	//	                         preciso ligar a projecao, aumentar o teto ou trocar
+	//	                         a midia.
+	//
+	// Colapsar as duas faria um "gateway saturado" no painel esconder um disco cheio,
+	// e a planta descobriria a diferenca quando a autonomia das origens acabasse.
+	CategoriaArmazenamentoEsgotado
+
 	// CategoriaRestritaPorLicenca indica funcionalidade nao habilitada pela licenca.
 	//
 	// Invariante do projeto: esta categoria NUNCA pode originar do caminho de
@@ -101,6 +118,8 @@ func (c Categoria) String() string {
 		return "duplicate_delivery"
 	case CategoriaRecursoEsgotado:
 		return "resource_exhausted"
+	case CategoriaArmazenamentoEsgotado:
+		return "storage_exhausted"
 	case CategoriaIndisponivel:
 		return "unavailable"
 	case CategoriaRestritaPorLicenca:

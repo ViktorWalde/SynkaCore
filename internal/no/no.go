@@ -474,6 +474,26 @@ func (n *No) tratarFalhaDeDespacho(ctx context.Context, envelopes []*contratov1.
 	// EntregaDuplicada nunca deveria chegar aqui como erro (o gateway a trata como
 	// sucesso), e RestritaPorLicenca nunca pode originar do caminho de aquisicao.
 	// Ambas caem no comportamento conservador: preservar o dado.
+	// Disco do gateway cheio. O lote e PRESERVADO como em qualquer falha
+	// transitoria — o dado e bom —, mas o registro e de ERRO e sai a cada
+	// tentativa, como no caso de credencial recusada.
+	//
+	// A razao e a mesma: isto nao se resolve esperando. Se nao houver projecao
+	// consumindo o diario, o espaco nunca volta sozinho, e um aviso que some depois
+	// de tres linhas seria perdido justamente no caso em que alguem precisa agir.
+	case falha.CategoriaArmazenamentoEsgotado:
+		n.registro.Error("O DISCO DO GATEWAY ESTA CHEIO; o dado permanece no buffer desta origem. "+
+			"Isto nao se resolve sozinho: ligue a projecao, aumente o teto do diario ou libere espaco",
+			slog.String("id_do_dispositivo", n.configuracao.IDDoDispositivo),
+			// Os envelopes DESTE lote, e nao a ocupacao do buffer. O lote ja foi
+			// drenado e ainda nao voltou quando esta linha e escrita, entao a ocupacao
+			// aqui reportaria zero — dizendo "o dado permanece no buffer" ao lado de um
+			// numero que afirma o contrario. Uma mensagem que se contradiz e pior que
+			// uma ausente: ela ensina quem opera a desconfiar do log.
+			slog.Int("envelopes_preservados", len(envelopes)),
+			slog.String("erro", err.Error()))
+		n.devolverERecuar(ctx, envelopes, err)
+
 	case falha.CategoriaIndisponivel, falha.CategoriaRecursoEsgotado,
 		falha.CategoriaInterna, falha.CategoriaNaoEncontrado,
 		falha.CategoriaEntregaDuplicada, falha.CategoriaRestritaPorLicenca:

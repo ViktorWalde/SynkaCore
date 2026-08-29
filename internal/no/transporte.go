@@ -115,6 +115,19 @@ func (t *TransportadorHTTP) Despachar(ctx context.Context,
 				"gateway saturado: ele pediu "+espera.String()),
 		}
 	}
+	// 507 ANTES do 5xx generico, e a ordem e a correcao de um defeito real.
+	//
+	// A primeira versao desta versao acrescentou ArmazenamentoEsgotado a taxonomia e ao
+	// mapeador do gateway, e esqueceu deste lado: o 507 caia no `>= 500` logo abaixo,
+	// virava Indisponivel, e a origem o registrava como falha transitoria comum —
+	// calando depois de tres linhas. A categoria existia e NUNCA era produzida no fio.
+	//
+	// O teste de ponta a ponta pegou, e o achado e o de sempre neste projeto: um
+	// caminho que ninguem exercita e um caminho que nao funciona.
+	if resposta.StatusCode == http.StatusInsufficientStorage {
+		return nil, falha.Nova(falha.CategoriaArmazenamentoEsgotado, operacaoDespachar,
+			"o disco do gateway esta cheio: o dado permanece nesta origem ate haver espaco")
+	}
 	if resposta.StatusCode >= http.StatusInternalServerError {
 		return nil, falha.Nova(falha.CategoriaIndisponivel, operacaoDespachar,
 			"gateway respondeu "+strconv.Itoa(resposta.StatusCode)+": retransmitir")

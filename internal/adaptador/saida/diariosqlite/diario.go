@@ -26,6 +26,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // driver SQLite em Go puro, sem cgo
@@ -42,6 +45,7 @@ const (
 	operacaoLerCursor        = "diariosqlite.LerCursor"
 	operacaoPodar            = "diariosqlite.Podar"
 	operacaoContar           = "diariosqlite.Contar"
+	operacaoOcupacao         = "diariosqlite.Ocupacao"
 
 	// formatoDeInstante e a UNICA serializacao de instante do diario.
 	//
@@ -55,6 +59,27 @@ const (
 // Diario e o diario de ingestao sobre um arquivo SQLite.
 type Diario struct {
 	banco *sql.DB
+
+	// caminho e o arquivo do diario, guardado para medir a ocupacao.
+	//
+	// O tamanho vem do SISTEMA DE ARQUIVOS, e nao de `PRAGMA page_count`. A pergunta
+	// que importa nao e quantas paginas o SQLite alocou, e sim quanto DISCO o diario
+	// esta ocupando — e isso inclui o WAL, que entre checkpoints pode ser fracao
+	// significativa do total.
+	caminho string
+
+	// tetoDeBytes limita o quanto o diario pode ocupar. Zero desliga o teto.
+	tetoDeBytes int64
+
+	// bytesOcupados e a ultima medicao, e excedeuOTeto o veredito dela.
+	//
+	// ATOMICOS, alimentados por um laco periodico em vez de medidos a cada remessa.
+	// Um os.Stat por remessa seria correto e desnecessario: mesmo a 20.000
+	// envelopes/s o diario cresce alguns megabytes por segundo, e uma medicao a cada
+	// dez segundos erra por uma margem que o proprio teto acomoda. O caminho quente
+	// paga uma leitura atomica.
+	bytesOcupados atomic.Int64
+	excedeuOTeto  atomic.Bool
 }
 
 // Abrir cria ou abre o diario no caminho indicado e aplica o esquema.
@@ -89,7 +114,63 @@ func Abrir(ctx context.Context, caminho string) (*Diario, error) {
 			"nao foi possivel aplicar o esquema do diario", err)
 	}
 
-	return &Diario{banco: banco}, nil
+	return &Diario{banco: banco, caminho: caminho}, nil
+}
+
+// ComTetoDeBytes limita o quanto o diario pode ocupar em disco.
+//
+// POR QUE O TETO EXISTE, e por que ele nao pode depender da poda: a poda so remove o
+// que ja foi projetado E envelheceu, e portanto NAO REMOVE NADA quando nao ha
+// projecao configurada — que e exatamente a configuracao recomendada para comissionar
+// uma planta e para operar sem infraestrutura analitica. Um gateway deixado "so
+// adquirindo" cresce sem limite ate encher o disco.
+//
+// E encher o disco e o pior desfecho disponivel. Recusar remessa e recuperavel: a
+// origem preserva o lote e retransmite. Disco cheio nao e recuperavel pelo gateway —
+// o SQLite passa a falhar, o log para de ser escrito, e a maquina inteira vai junto.
+//
+// Zero desliga o teto. Util em teste e em maquina com disco dedicado; em producao ele
+// deve estar ligado.
+func (d *Diario) ComTetoDeBytes(teto int64) *Diario {
+	d.tetoDeBytes = teto
+	return d
+}
+
+// sufixosDoArquivo sao os companheiros que o modo WAL cria ao lado do diario.
+//
+// Os tres somados sao o que de fato ocupa o disco. Medir so o .db subestimaria a
+// ocupacao justamente sob carga, que e quando o WAL cresce entre checkpoints — e o
+// teto erraria para o lado perigoso.
+var sufixosDoArquivo = []string{"", "-wal", "-shm"}
+
+// MedirOcupacao atualiza o tamanho observado do diario e o veredito do teto.
+//
+// Chamada por um laco periodico, nunca no caminho de gravacao.
+func (d *Diario) MedirOcupacao() (int64, error) {
+	var total int64
+	for _, sufixo := range sufixosDoArquivo {
+		informacao, err := os.Stat(d.caminho + sufixo)
+		if err != nil {
+			// Ausencia do WAL ou do SHM e NORMAL: eles nascem no primeiro uso e somem
+			// no fechamento limpo. Apenas o arquivo principal faltando seria anomalia,
+			// e ela aparece na proxima gravacao de qualquer jeito.
+			if os.IsNotExist(err) {
+				continue
+			}
+			return 0, falha.Envolver(falha.CategoriaInterna, operacaoOcupacao,
+				"nao foi possivel medir a ocupacao do diario", err)
+		}
+		total += informacao.Size()
+	}
+
+	d.bytesOcupados.Store(total)
+	d.excedeuOTeto.Store(d.tetoDeBytes > 0 && total >= d.tetoDeBytes)
+	return total, nil
+}
+
+// Ocupacao devolve a ultima medicao e o teto configurado.
+func (d *Diario) Ocupacao() (bytes, teto int64) {
+	return d.bytesOcupados.Load(), d.tetoDeBytes
 }
 
 // Fechar libera o arquivo do diario.
@@ -124,6 +205,21 @@ type ResultadoDaGravacao struct {
 func (d *Diario) GravarLote(ctx context.Context, envelopes []aquisicao.Envelope) (ResultadoDaGravacao, error) {
 	if len(envelopes) == 0 {
 		return ResultadoDaGravacao{}, nil
+	}
+
+	// O TETO E CONFERIDO ANTES DE ABRIR A TRANSACAO, e a recusa e a resposta certa.
+	//
+	// A origem preserva o lote e retransmite: o dado nao se perde, ele espera do outro
+	// lado. E esperar do outro lado e infinitamente melhor que o gateway seguir
+	// gravando ate o sistema de arquivos encher — a partir dali nao ha mais recusa
+	// graciosa, ha uma maquina que parou.
+	if d.excedeuOTeto.Load() {
+		bytes, teto := d.Ocupacao()
+		return ResultadoDaGravacao{}, falha.Nova(falha.CategoriaArmazenamentoEsgotado,
+			operacaoGravarLote,
+			"o diario alcancou o teto de "+formatarBytes(teto)+" (ocupando "+
+				formatarBytes(bytes)+"). Ligue a projecao para que a poda libere espaco, "+
+				"aumente o teto, ou libere disco")
 	}
 
 	transacao, err := d.banco.BeginTx(ctx, nil)
@@ -382,5 +478,79 @@ func (d *Diario) Verificar(ctx context.Context) error {
 		return falha.Envolver(falha.CategoriaInterna, operacaoContar,
 			"o diario nao respondeu a verificacao", err)
 	}
+	return d.verificarEscrita(ctx)
+}
+
+// verificarEscrita prova que o diario ainda ACEITA gravacao.
+//
+// A VERIFICACAO ANTERIOR SO LIA. Num disco cheio o SELECT continua funcionando
+// enquanto todo INSERT falha, e o gateway reportaria `journal: available` recusando
+// toda remessa — violando a regra que o proprio projeto escreveu, de que relatar
+// saudavel quando o sistema nao esta e ativamente enganoso para quem esta de plantao.
+// E violando-a no modo de falha MAIS PROVAVEL em campo.
+//
+// A sonda escreve na tabela de calibracao, e nao no diario, pela mesma razao que a
+// calibracao de partida usa: uma linha fabricada que escapasse para o diario seria
+// projetada ao modelo de leitura como se fosse medicao.
+//
+// INSERT e DELETE na MESMA transacao. Um unico commit — portanto um unico fsync, que
+// e o que de fato prova a escrita — e nenhuma linha residual. Duas transacoes
+// custariam dois fsync e deixariam residuo entre elas.
+//
+// O custo e um fsync por consulta de saude, na faixa de centenas de microssegundos.
+// Ele disputa a conexao unica com a ingestao, e sob saturacao a consulta de saude
+// entra na fila — o que e informacao verdadeira, e nao defeito: um /saude que responde
+// rapido enquanto a ingestao esta presa descreveria um gateway que nao existe.
+func (d *Diario) verificarEscrita(ctx context.Context) error {
+	transacao, err := d.banco.BeginTx(ctx, nil)
+	if err != nil {
+		return falha.Envolver(falha.CategoriaInterna, operacaoContar,
+			"o diario nao aceitou iniciar uma transacao de verificacao", err)
+	}
+	defer func() { _ = transacao.Rollback() }()
+
+	resultado, err := transacao.ExecContext(ctx,
+		`INSERT INTO calibracao_de_disco (carga) VALUES (?)`, []byte("saude"))
+	if err != nil {
+		return falha.Envolver(falha.CategoriaInterna, operacaoContar,
+			"o diario nao aceita gravacao: o disco pode estar cheio ou somente leitura", err)
+	}
+
+	id, err := resultado.LastInsertId()
+	if err != nil {
+		return falha.Envolver(falha.CategoriaInterna, operacaoContar,
+			"o diario nao confirmou a gravacao de verificacao", err)
+	}
+	if _, err := transacao.ExecContext(ctx,
+		`DELETE FROM calibracao_de_disco WHERE id = ?`, id); err != nil {
+		return falha.Envolver(falha.CategoriaInterna, operacaoContar,
+			"o diario nao aceitou remover a linha de verificacao", err)
+	}
+
+	// O COMMIT e a prova. Ele forca o fsync que uma transacao revertida nao forcaria —
+	// e sem fsync a verificacao passaria num disco que ja nao aceita escrita.
+	if err := transacao.Commit(); err != nil {
+		return falha.Envolver(falha.CategoriaInterna, operacaoContar,
+			"o diario nao confirmou a transacao de verificacao: o disco pode estar cheio", err)
+	}
 	return nil
+}
+
+// formatarBytes devolve o tamanho em unidade legivel, para mensagem de operador.
+//
+// Existe porque a mensagem e lida por quem opera a planta, e "2147483648" nao diz
+// nada que "2.0 GiB" nao diga melhor. Binario e nao decimal, para casar com o que
+// `df` e `ls -lh` mostram na mesma maquina.
+func formatarBytes(bytes int64) string {
+	const unidade = 1024
+	if bytes < unidade {
+		return strconv.FormatInt(bytes, 10) + " B"
+	}
+	divisor, expoente := int64(unidade), 0
+	for n := bytes / unidade; n >= unidade; n /= unidade {
+		divisor *= unidade
+		expoente++
+	}
+	return strconv.FormatFloat(float64(bytes)/float64(divisor), 'f', 1, 64) +
+		" " + string("KMGT"[expoente]) + "iB"
 }
