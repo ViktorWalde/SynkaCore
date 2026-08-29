@@ -40,7 +40,7 @@ compilar:
 
 .PHONY: limpar
 limpar:
-	rm -rf $(BINARIOS) cobertura.out cobertura.html
+	rm -rf $(BINARIOS) dist cobertura.out cobertura.html
 
 # ---------------------------------------------------------------- verificacao
 
@@ -51,6 +51,45 @@ verificar: formatar-conferir vet testar linter contrato-conferir no-micropython-
 .PHONY: testar
 testar:
 	$(CGO_PARA_TESTE) go test -race -count=1 ./...
+
+# BANCO_DE_TESTE e o banco de consulta contra o qual o modelo de leitura e
+# exercitado. Mesmo endereco que o docker-compose sobe.
+BANCO_DE_TESTE ?= postgres://synkacore:synkacore@127.0.0.1:5432/synkacore
+
+# testar-projecao exercita o modelo de leitura contra um TimescaleDB DE VERDADE.
+#
+# Por que ele existe separado de `testar`: o projetor e o unico componente do
+# caminho de dado que nao pode ser verificado sem banco. Um duble no lugar dele
+# afirmaria justamente o que nao foi verificado — que o INSERT casa com as colunas,
+# que a restricao de unicidade torna a reprojecao inofensiva, que as migracoes
+# aplicam do zero. Todas essas sao propriedades do BANCO, nao do nosso codigo.
+#
+# A ASSIMETRIA E DELIBERADA: o teste PULA quando SYNKACORE_BANCO_DE_TESTE esta
+# ausente, e este alvo FALHA. Sem ela, `make verificar` exigiria Docker de todo mundo
+# — e um portao que nao roda na maquina de quem desenvolve e um portao que sera
+# contornado. Aqui o portao completo continua rodando em qualquer maquina, e quem
+# quer a verificacao do modelo de leitura pede por ela.
+.PHONY: testar-projecao
+testar-projecao:
+	@if ! command -v psql >/dev/null 2>&1; then \
+		printf 'aviso: psql ausente; a conectividade nao sera conferida antes do teste\n'; \
+	fi
+	@printf 'verificando o banco de consulta em %s\n' '$(BANCO_DE_TESTE)'
+	@SYNKACORE_BANCO_DE_TESTE='$(BANCO_DE_TESTE)' \
+		$(CGO_PARA_TESTE) go test -race -count=1 -v \
+		./internal/adaptador/saida/projetortimescale/ 2>&1 | tee /tmp/synkacore-projecao.log | \
+		grep -E '^(--- |ok|FAIL|PASS)' || true
+	@if grep -q 'SYNKACORE_BANCO_DE_TESTE ausente' /tmp/synkacore-projecao.log; then \
+		printf '\nO teste do modelo de leitura PULOU: o banco nao esta acessivel.\n'; \
+		printf 'Suba a infraestrutura com `make infra` e tente de novo.\n'; exit 1; fi
+	@if grep -q '^FAIL' /tmp/synkacore-projecao.log; then exit 1; fi
+	@printf 'modelo de leitura verificado contra banco real\n'
+
+# verificar-completo e o portao INTEIRO, incluindo o que exige infraestrutura.
+#
+# E o que roda antes de soltar uma versao. `verificar` roda a cada mudanca.
+.PHONY: verificar-completo
+verificar-completo: verificar testar-projecao
 
 .PHONY: cobertura
 cobertura:
@@ -179,6 +218,47 @@ carga: compilar
 	./$(BINARIOS)/synkacore-carga -origens $(or $(ORIGENS),50) -lote $(or $(LOTE),100) \
 		-intervalo $(or $(INTERVALO),1s) -duracao $(or $(DURACAO),30s) \
 		-classe $(or $(CLASSE),amostra)
+
+# ---------------------------------------------------------------- empacotamento
+
+# VERSAO vem do BINARIO, e nao de git describe.
+#
+# git describe devolvia "v1.2-java-8-g77660fb-dirty" — a tag mais recente do
+# repositorio e da era Java, e o pacote saia carregando a versao errada. Um artefato
+# de implantacao com versao errada e pior que um sem versao: ele afirma algo falso
+# para quem confere o que esta instalado na planta.
+#
+# Perguntar ao binario garante que o nome do pacote e o que o gateway responde em
+# `-versao` e no /saude sejam a MESMA coisa, por construcao. Atribuicao preguicosa
+# (=, e nao :=) porque o binario so existe depois de `compilar`.
+VERSAO = $(shell ./$(BINARIOS)/synkacore-gateway -versao 2>/dev/null | tr '/' '-' || echo desconhecida)
+PACOTE = $(VERSAO)
+
+# pacote monta o tarball que vai para a planta.
+#
+# O README argumenta desde a V2.0 que "implantar e copiar UM arquivo e uma unidade
+# systemd, e reverter e manter o arquivo anterior" — e esse foi o argumento que
+# decidiu a linguagem. Ate a V2.5 o argumento estava escrito e o artefato nao
+# existia. Um argumento de implantacao sem o artefato e uma promessa, nao uma
+# propriedade.
+#
+# O que entra: o binario estatico, a unidade, o modelo de configuracao de processo,
+# o exemplo de instalacao, as migracoes do modelo de leitura e as instrucoes. O que
+# NAO entra: nada que precise ser resolvido na maquina de destino.
+.PHONY: pacote
+pacote: compilar
+	@rm -rf dist/$(PACOTE) && mkdir -p dist/$(PACOTE)
+	@cp $(BINARIOS)/synkacore-gateway         dist/$(PACOTE)/
+	@cp $(BINARIOS)/synkacore-credencial      dist/$(PACOTE)/
+	@cp implantacao/systemd/*.service         dist/$(PACOTE)/
+	@cp implantacao/systemd/*.env             dist/$(PACOTE)/
+	@cp configuracao/instalacao.exemplo.yaml  dist/$(PACOTE)/
+	@cp docs/IMPLANTACAO.md                   dist/$(PACOTE)/LEIA-ME.md
+	@mkdir -p dist/$(PACOTE)/migracoes && cp migracoes/*.sql dist/$(PACOTE)/migracoes/
+	@cd dist/$(PACOTE) && sha256sum * migracoes/* > SHA256SUMS 2>/dev/null || true
+	@tar -czf dist/$(PACOTE).tar.gz -C dist $(PACOTE)
+	@printf 'pacote em dist/%s.tar.gz\n' '$(PACOTE)'
+	@tar -tzf dist/$(PACOTE).tar.gz | sed 's|^|  |'
 
 # ---------------------------------------------------------------- no micropython
 

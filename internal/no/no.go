@@ -14,6 +14,7 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/no/simulacao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/falha"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
+	"github.com/ViktorWalde/SynkaCore/internal/plataforma/versao"
 )
 
 // Configuracao reune os parametros de operacao de uma origem.
@@ -341,7 +342,11 @@ func (n *No) emitirDescritor() {
 	n.enfileirar(&contratov1.Envelope{
 		Conteudo: &contratov1.Envelope_DescritorDaOrigem{
 			DescritorDaOrigem: &contratov1.DescritorDaOrigem{
-				VersaoDoFirmware: proto.String("synkacore-no/2.0"),
+				// Da constante, e nao do literal que estava aqui: ele dizia
+				// "synkacore-no/2.0" cinco versoes depois. O painel de comissionamento
+				// responde "quais origens ainda nao foram atualizadas?" com este campo,
+				// e um rotulo congelado faria toda origem parecer atualizada.
+				VersaoDoFirmware: proto.String(versao.Produto + "-no/" + versao.Numero),
 				ModeloDoHardware: proto.String("simulacao/camara-de-vacuo"),
 				Canais: []*contratov1.DescritorDeCanal{
 					{

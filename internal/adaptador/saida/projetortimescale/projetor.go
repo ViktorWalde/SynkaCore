@@ -167,10 +167,24 @@ func (p *Projetor) Projetar(ctx context.Context, linhas []LinhaProjetada) error 
 // o esquema aplicado responde ao ping e falha em toda gravacao. Relatar saudavel
 // nesse estado seria enganar quem esta de plantao — a mesma regra que o health
 // check do diario ja obedece.
+// A verificacao resolve a tabela pelo SEARCH_PATH, e nao por nome solto, e isso
+// custou um defeito real encontrado pelo primeiro teste que este componente teve.
+//
+// A versao anterior perguntava a information_schema se EXISTIA alguma tabela
+// chamada `leitura` com a coluna `id_do_ponto_de_medicao` — em qualquer esquema
+// visivel. Ela respondia "sim" olhando para uma tabela que o gateway nao ia
+// escrever, e o resultado era o pior tipo de verificacao: a que passa sem ter
+// verificado o que o chamador pensou que ela verificou.
+//
+// to_regclass resolve exatamente como o INSERT resolve — pelo search_path da
+// conexao — e devolve NULO quando nao encontra, em vez de erro. Assim a pergunta
+// passa a ser a unica que importa: a tabela em que EU vou gravar esta pronta?
+const relacaoDoModeloDeLeitura = `to_regclass('leitura')`
+
 func (p *Projetor) Verificar(ctx context.Context) error {
 	var existe bool
 	err := p.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'leitura')`).Scan(&existe)
+		`SELECT `+relacaoDoModeloDeLeitura+` IS NOT NULL`).Scan(&existe)
 	if err != nil {
 		return falha.Envolver(falha.CategoriaIndisponivel, operacaoVerificar,
 			"o banco de consulta nao respondeu", err)
@@ -185,11 +199,17 @@ func (p *Projetor) Verificar(ctx context.Context) error {
 	// `id_do_ponto_de_medicao` — a verificacao passaria e TODA gravacao falharia
 	// depois, em operacao, com erro de coluna inexistente. Descobrir isso na
 	// partida custa uma mensagem; descobrir em operacao custa uma investigacao.
+	//
+	// attisdropped filtra coluna removida: o Postgres mantem a entrada em
+	// pg_attribute apos um DROP COLUMN, e sem o filtro um esquema de onde a coluna
+	// tivesse sido retirada continuaria passando.
 	var temColuna bool
 	err = p.pool.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			 WHERE table_name = 'leitura' AND column_name = 'id_do_ponto_de_medicao')`).Scan(&temColuna)
+			SELECT 1 FROM pg_attribute
+			 WHERE attrelid = `+relacaoDoModeloDeLeitura+`
+			   AND attname = 'id_do_ponto_de_medicao'
+			   AND NOT attisdropped)`).Scan(&temColuna)
 	if err != nil {
 		return falha.Envolver(falha.CategoriaIndisponivel, operacaoVerificar,
 			"o banco de consulta nao respondeu", err)

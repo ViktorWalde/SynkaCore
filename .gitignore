@@ -47,3 +47,6 @@ __pycache__/
 .idea/
 .vscode/
 *.swp
+
+# Pacotes de implantacao gerados por `make pacote`.
+/dist/

@@ -203,7 +203,7 @@ relógio de bateria consigam validar o certificado dele.
 
 | Endpoint | Descrição |
 |---|---|
-| `GET /saude` | Estado do diário e da projeção, verificados de verdade |
+| `GET /saude` | Versão, e o estado do diário, da projeção e da admissão, verificados de verdade |
 | `GET /leituras?limite=N` | Registros recentes do diário, já decodificados |
 | `GET /contrato` | Tipos de conteúdo que este gateway reconhece |
 | `GET /comissionamento` | Desacordos entre o que as origens declaram e o que a instalação configura |
@@ -338,6 +338,9 @@ SynkaCore/
 
 ```bash
 make verificar    # formatação, vet, testes com -race, linter, contrato em dia
+make testar-projecao   # modelo de leitura contra um TimescaleDB de verdade
+make verificar-completo # os dois: o portão que precede uma entrega
+make pacote       # tarball de implantação: binário, unidade systemd, migrações
 make compilar     # binários estáticos, sem cgo
 make contrato     # regera o Go a partir do .proto
 make no-micropython  # regera o codificador do nó a partir do .proto
@@ -373,6 +376,10 @@ isso vale mais que qualquer vantagem de velocidade bruta.
   evento discreto.
 - **[V2.5](docs/V2.5.md)** — o orçamento de espera vira promessa declarada na
   instalação, e o gateway calibra o próprio disco na partida.
+- **[V2.6](docs/V2.6.md)** — o caminho de leitura ganha testes contra banco real, e
+  o gateway vira um pacote instalável.
+- **[Implantação](docs/IMPLANTACAO.md)** — instalar, comissionar por etapas,
+  atualizar e reverter numa planta.
 - **[Visão geral visual](docs/VISAO-GERAL.md)** — diagramas de fluxo e cenários de queda.
 - **[Trade-offs](docs/TRADE-OFFS.md)** — decisões técnicas e seus custos.
 - **[Qualidade](docs/QUALIDADE.md)** — os portões do build.
@@ -399,3 +406,4 @@ isso vale mais que qualquer vantagem de velocidade bruta.
 | **V2.3** | 🚧 Em desenvolvimento | Capacidade medida, gargalo identificado, painéis do Grafana como código |
 | **V2.4** | 🚧 Em desenvolvimento | Contrapressão explícita: saturação declarada com `429`, `Retry-After` medido, e reserva por classe de dado |
 | **V2.5** | 🚧 Em desenvolvimento | Orçamento de espera na configuração da instalação, e calibração do disco na partida |
+| **V2.6** | 🚧 Em desenvolvimento | Modelo de leitura exercitado contra banco real, unidade systemd, pacote de implantação e identidade de versão |

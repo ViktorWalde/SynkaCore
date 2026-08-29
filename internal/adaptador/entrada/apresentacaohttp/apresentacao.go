@@ -33,6 +33,7 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/dominio/instalacao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/contrapressao"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
+	"github.com/ViktorWalde/SynkaCore/internal/plataforma/versao"
 )
 
 const (
@@ -151,6 +152,14 @@ func (a *Apresentacao) Rotas() *http.ServeMux {
 // Campos em ingles porque isto e consumido por sistema de monitoramento, nao por
 // pessoa lendo codigo. Mesma regra de falha.Categoria.String.
 type respostaDeSaude struct {
+	// Version identifica a compilacao que esta respondendo.
+	//
+	// Primeira coisa que um tecnico pergunta em campo, e ate a V2.5 o gateway nao
+	// sabia responder: o painel de comissionamento reportava a versao de firmware de
+	// cada ORIGEM e o proprio gateway ficava anonimo. Numa frota de plantas, "esta
+	// aqui esta atras da outra?" nao tinha resposta sem abrir o binario.
+	Version string `json:"version"`
+
 	Journal         string `json:"journal"`
 	Projection      string `json:"projection"`
 	ProjectionSince string `json:"projection_since"`
@@ -223,6 +232,7 @@ func (a *Apresentacao) responderSaude(escritor http.ResponseWriter, requisicao *
 	}
 
 	resposta := respostaDeSaude{
+		Version:         versao.Completa(),
 		Journal:         "available",
 		Projection:      projecao,
 		ProjectionSince: desde.Format(time.RFC3339),

@@ -1,0 +1,9 @@
+Diretorio vazio de proposito.
+
+O Grafana procura provisionamento de plugins aqui e registra `level=error` quando o
+diretorio nao existe. O projeto nao provisiona plugin nenhum — a planta nao tem
+internet e um painel que espera um plugin externo e um painel inutil —, mas um erro
+no log da partida treina quem opera a ignorar a saida inteira.
+
+Um diretorio vazio custa nada e mantem o log limpo, e log limpo e o que permite
+notar o erro que importa.

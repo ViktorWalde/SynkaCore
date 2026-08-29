@@ -1,0 +1,116 @@
+# Unidade systemd do gateway do SynkaCore.
+#
+# ESTE ARQUIVO E O ARGUMENTO QUE DECIDIU A LINGUAGEM. O README diz, desde a V2.0,
+# que "implantar e copiar UM arquivo e uma unidade systemd, e reverter e manter o
+# arquivo anterior". O argumento estava escrito e a unidade nao existia — e um
+# argumento de implantacao que nao tem o artefato e uma promessa, nao uma
+# propriedade.
+#
+# Instalar:
+#     sudo install -m 0755 bin/synkacore-gateway /usr/local/bin/
+#     sudo install -m 0644 implantacao/systemd/synkacore-gateway.service /etc/systemd/system/
+#     sudo install -m 0644 implantacao/systemd/synkacore-gateway.env /etc/synkacore/gateway.env
+#     sudo useradd --system --no-create-home --shell /usr/sbin/nologin synkacore
+#     sudo install -d -o synkacore -g synkacore -m 0750 /var/lib/synkacore
+#     sudo systemctl daemon-reload && sudo systemctl enable --now synkacore-gateway
+#
+# Reverter:
+#     sudo install -m 0755 /var/lib/synkacore/synkacore-gateway.anterior /usr/local/bin/synkacore-gateway
+#     sudo systemctl restart synkacore-gateway
+#
+# E so isso, porque o binario e estatico e sem cgo. Nao ha runtime a casar, nao ha
+# pacote a resolver, e a versao anterior e um arquivo que continua no disco.
+
+[Unit]
+Description=SynkaCore — gateway de aquisicao industrial OT/IT
+Documentation=https://github.com/ViktorWalde/SynkaCore
+
+# After, e NAO Requires, para a rede. O gateway precisa da rede para RECEBER, e nao
+# para funcionar: sem ela ele sobe, abre o diario e fica pronto. Um Requires faria o
+# servico ser derrubado por uma oscilacao de rede — parando de aceitar dado por causa
+# do problema que ele existe para atravessar.
+After=network-online.target
+Wants=network-online.target
+
+# StartLimit desligado de proposito, e ELE MORA AQUI, em [Unit].
+#
+# Na primeira versao desta unidade ele estava em [Service], onde o systemd o IGNORA
+# em silencio — `systemd-analyze verify` acusou. A linha existe justamente para
+# impedir que o systemd desista apos algumas tentativas rapidas e deixe a unidade em
+# `failed` ate alguem intervir; numa planta sem ninguem por perto, "desistiu as 3h" e
+# a pior resposta possivel. Ignorada, ela seria uma garantia que so existia no
+# comentario.
+#
+# Se a causa da falha for permanente, o log dira. Enquanto isso, e melhor continuar
+# tentando.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=synkacore
+Group=synkacore
+
+EnvironmentFile=/etc/synkacore/gateway.env
+ExecStart=/usr/local/bin/synkacore-gateway \
+    -ingresso ${SYNKACORE_INGRESSO} \
+    -apresentacao ${SYNKACORE_APRESENTACAO} \
+    -diario ${SYNKACORE_DIARIO} \
+    -banco ${SYNKACORE_BANCO} \
+    -instalacao ${SYNKACORE_INSTALACAO} \
+    -registro ${SYNKACORE_REGISTRO}
+
+# SIGTERM e o que o desligamento limpo do gateway espera: ele encerra os dois
+# servidores aguardando as requisicoes em curso, para nao cortar uma remessa no meio
+# da gravacao. Nada se perderia — a origem retransmitiria —, mas o trabalho seria
+# refeito a toa.
+KillSignal=SIGTERM
+
+# Folga suficiente para o desligamento limpo, que tem tempo limite proprio de 15s.
+# Menor que isso faria o systemd matar o processo no meio do que ele ja sabe fazer
+# direito.
+TimeoutStopSec=30
+
+# REINICIA SEMPRE, inclusive apos saida com codigo zero.
+#
+# A aquisicao e o unico caminho que nunca pode parar. Um gateway parado nao perde o
+# que ja esta no diario, mas para de ACEITAR — e a partir dai a autonomia da planta
+# passa a ser o buffer das origens, que e finito.
+Restart=always
+RestartSec=5
+
+# ---------------------------------------------------------------- endurecimento
+#
+# O gateway fica entre duas redes e uma delas e a de escritorio do cliente, com
+# estacoes que ninguem administra. Ele nao roteia e nao comanda equipamento — mas o
+# processo em si merece a superficie minima.
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# ProtectSystem=strict deixa o sistema inteiro somente-leitura. O diario e a UNICA
+# coisa que este processo grava, e declarar isso aqui e a definicao mais curta e mais
+# verificavel do que ele faz no disco.
+ReadWritePaths=/var/lib/synkacore
+
+# Somente as familias que o gateway usa: HTTP nas duas redes e UDP para o servidor
+# de tempo. Sem AF_NETLINK, sem sockets unix de terceiros.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# A porta 123 (servidor de tempo) exige privilegio. A capacidade e concedida
+# SOZINHA, e nao rodando como root: se o servidor de tempo nao for usado, remova as
+# duas linhas e o processo fica sem capacidade nenhuma.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

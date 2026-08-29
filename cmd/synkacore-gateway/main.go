@@ -41,6 +41,7 @@ import (
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/identificador"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/relogio"
 	"github.com/ViktorWalde/SynkaCore/internal/plataforma/resiliencia"
+	"github.com/ViktorWalde/SynkaCore/internal/plataforma/versao"
 )
 
 // Padroes dimensionados para o cenario alvo, todos sobrescreviveis.
@@ -136,7 +137,17 @@ func executar() error {
 	caminhoDoCertificado := flag.String("certificado", "", "certificado de servidor do gateway")
 	caminhoDaChave := flag.String("chave", "", "chave privada do gateway")
 	nivelDeRegistro := flag.String("registro", "info", "nivel de registro: debug, info, warn, error")
+	mostrarVersao := flag.Bool("versao", false, "imprime a versao e sai")
 	flag.Parse()
+
+	// Respondida ANTES de qualquer efeito colateral — antes de abrir o diario, de
+	// carregar configuracao ou de escutar em porta nenhuma. Um tecnico em campo
+	// perguntando a versao nao pode, com isso, criar um arquivo de diario nem
+	// disputar a porta com o servico que ja esta rodando.
+	if *mostrarVersao {
+		fmt.Println(versao.Completa())
+		return nil
+	}
 
 	registro := montarRegistro(*nivelDeRegistro)
 
@@ -258,6 +269,7 @@ func executar() error {
 	servidorDeApresentacao := montarServidor(*enderecoDeApresentacao, apresentacao.Rotas())
 
 	registro.Info("synkacore-gateway iniciando",
+		slog.String("versao", versao.Numero),
 		slog.String("id_da_execucao", idDaExecucao),
 		slog.String("ingresso", *enderecoDeIngresso),
 		slog.String("apresentacao", *enderecoDeApresentacao),

@@ -54,7 +54,28 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - grafana:/var/lib/grafana
+      # SEM VOLUME PARA O ESTADO DO GRAFANA, e a ausencia e a correcao.
+      #
+      # Havia um volume nomeado em /var/lib/grafana, e sob PODMAN ROOTLESS ele
+      # impedia o Grafana de subir: o volume nasce pertencendo ao usuario mapeado da
+      # raiz do namespace, o processo do Grafana roda como UID 472, e o resultado e
+      # `failed to create SQLite database file: permission denied`. O container
+      # morria na partida.
+      #
+      # Isso ficou escondido por duas versoes. A V2.3 registrou "os paineis nao foram
+      # abertos" atribuindo a uma porta 3000 ocupada; a porta era so o primeiro
+      # obstaculo, e atras dele estava este.
+      #
+      # A correcao NAO e conceder permissao nem rodar como root: e notar que nao ha o
+      # que persistir. Fontes de dados e paineis sao PROVISIONADOS como codigo, com
+      # allowUiUpdates=false — nada criado na tela sobrevive de proposito. O unico
+      # conteudo daquele volume era o SQLite interno do Grafana, que se reconstroi
+      # inteiro na proxima partida.
+      #
+      # Consequencia aceita: usuario extra criado a mao e preferencia de tema se
+      # perdem ao recriar o container. Numa instalacao onde os paineis vem do
+      # repositorio, isso e o comportamento desejado.
+
       # Fontes de dados e paineis como CODIGO, versionados.
       #
       # E o argumento decisivo da escolha do Grafana, e ele fica mais forte com
@@ -65,4 +86,3 @@ services:
 
 volumes:
   timescaledb:
-  grafana:
